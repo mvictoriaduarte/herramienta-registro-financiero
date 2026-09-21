@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+:root {
+  --petroleum: #0e4a5a;
+  --petroleum-deep: #0a3440;
+  --petroleum-soft: #2a7a86;
+  --cream: #f4f0e7;
+  --fog: #e5eef0;
+  --ink: #1c2e33;
+  --muted: #5c7178;
+}
+
+@theme inline {
+  --color-petroleum: var(--petroleum);
+  --color-petroleum-deep: var(--petroleum-deep);
+  --color-petroleum-soft: var(--petroleum-soft);
+  --color-cream: var(--cream);
+  --color-fog: var(--fog);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --font-sans: var(--font-outfit);
+  --font-display: var(--font-fraunces);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: var(--ink);
+  font-family: var(--font-outfit), sans-serif;
+  background:
+    radial-gradient(1200px 700px at 12% -10%, rgba(42, 122, 134, 0.16), transparent 55%),
+    radial-gradient(900px 600px at 90% 8%, rgba(14, 74, 90, 0.12), transparent 50%),
+    linear-gradient(180deg, #f7f4ee 0%, #eef3f2 48%, #f3efe6 100%);
+}
+
+h1,
+h2,
+.font-display {
+  font-family: var(--font-fraunces), serif;
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  transition:
+    transform 400ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 400ms ease,
+    border-color 400ms ease,
+    box-shadow 400ms ease,
+    color 400ms ease,
+    opacity 400ms ease;
+}
+
+.glass-panel {
+  border: 1px solid rgba(14, 74, 90, 0.12);
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(232, 242, 240, 0.42) 100%
+  );
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.82) inset,
+    0 18px 50px rgba(14, 74, 90, 0.1);
+  backdrop-filter: blur(22px);
+}
+
+.ambient-blob {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(40px);
+  opacity: 0.55;
+  animation: drift 18s ease-in-out infinite;
+}
+
+.animate-in {
+  animation: rise 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.delay-1 { animation-delay: 80ms; }
+.delay-2 { animation-delay: 160ms; }
+.delay-3 { animation-delay: 240ms; }
+.delay-4 { animation-delay: 320ms; }
+.delay-5 { animation-delay: 400ms; }
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, -6%, 0) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

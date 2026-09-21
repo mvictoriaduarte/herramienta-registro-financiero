@@ -1,0 +1,152 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String           @id @default(cuid())
+  username        String           @unique
+  passwordHash    String
+  role            String           @default("user")
+  createdAt       DateTime         @default(now())
+  createdById     String?
+  categories      Category[]
+  transactions    Transaction[]
+  accounts        Account[]
+  incomeSources   IncomeSource[]
+  incomePeriods   IncomePeriod[]
+  accountBalances AccountBalance[]
+}
+
+model Account {
+  id           String           @id @default(cuid())
+  name         String
+  currency     String           @default("ARS")
+  active       Boolean          @default(true)
+  isDefault    Boolean          @default(false)
+  userId       String
+  createdAt    DateTime         @default(now())
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  balances     AccountBalance[]
+
+  @@unique([userId, name])
+}
+
+model Category {
+  id           String        @id @default(cuid())
+  name         String
+  type         String
+  group        String        @default("")
+  recurrence   String        @default("eventual")
+  userId       String
+  createdAt    DateTime      @default(now())
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([userId, name, type])
+}
+
+model Transaction {
+  id            String              @id @default(cuid())
+  incomeAmount  Float               @default(0)
+  expenseAmount Float               @default(0)
+  amount        Float               @default(0)
+  date          DateTime
+  note          String              @default("")
+  currency      String              @default("ARS")
+  fxRate        Float?
+  userId        String
+  categoryId    String
+  accountId     String?
+  createdAt     DateTime            @default(now())
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category      Category            @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  account       Account?            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  refunds       TransactionRefund[]
+
+  @@index([userId, date])
+}
+
+model TransactionRefund {
+  id            String      @id @default(cuid())
+  amount        Float
+  note          String      @default("")
+  date          DateTime?
+  transactionId String
+  createdAt     DateTime    @default(now())
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+}
+
+model IncomeSource {
+  id            String         @id @default(cuid())
+  name          String
+  billingMode   String
+  color         String         @default("#0E4A5A")
+  logoUrl       String?
+  defaultFxRate Float?
+  userId        String
+  createdAt     DateTime       @default(now())
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periods       IncomePeriod[]
+
+  @@unique([userId, name])
+}
+
+model IncomePeriod {
+  id          String             @id @default(cuid())
+  year        Int
+  month       Int
+  units       Float?
+  unitValue   Float?
+  fixedAmount Float?
+  sourceId    String
+  userId      String
+  createdAt   DateTime           @default(now())
+  source      IncomeSource       @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adjustments IncomeAdjustment[]
+
+  @@unique([userId, sourceId, year, month])
+  @@index([userId, year, month])
+}
+
+model IncomeAdjustment {
+  id      String       @id @default(cuid())
+  name    String
+  amount  Float
+  periodId String
+  period  IncomePeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+}
+
+model AccountBalance {
+  id        String   @id @default(cuid())
+  year      Int
+  month     Int
+  kind      String
+  amountArs Float    @default(0)
+  amountUsd Float    @default(0)
+  accountId String
+  userId    String
+  createdAt DateTime @default(now())
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, accountId, year, month, kind])
+  @@index([userId, year, month])
+}
+
+model FxRate {
+  id        String   @id @default(cuid())
+  date      String   @unique
+  buy       Float
+  sell      Float
+  source    String   @default("BNA")
+  fetchedAt DateTime @default(now())
+}
