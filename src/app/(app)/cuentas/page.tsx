@@ -37,6 +37,7 @@ export default async function AccountsPage() {
               id: account.id,
               name: account.name,
               currency: account.currency,
+              purpose: account.purpose,
               isDefault: account.isDefault,
               transactions: account._count.transactions,
             }))}

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import type { ActionState } from "@/lib/types";
+import { parseAccountPurpose } from "@/lib/finance";
 
 const accountSchema = z.object({
   name: z
@@ -13,6 +14,7 @@ const accountSchema = z.object({
     .min(2, "El nombre necesita al menos 2 caracteres.")
     .max(60, "El nombre es demasiado largo."),
   currency: z.enum(["ARS", "USD"]),
+  purpose: z.enum(["spending", "savings"]),
   isDefault: z.boolean().optional(),
 });
 
@@ -58,6 +60,7 @@ export async function createAccountAction(
   const parsed = accountSchema.safeParse({
     name: formData.get("name"),
     currency: formData.get("currency"),
+    purpose: parseAccountPurpose(formData.get("purpose")),
     isDefault: formData.get("isDefault") === "on",
   });
 
@@ -80,6 +83,7 @@ export async function createAccountAction(
     data: {
       name: parsed.data.name,
       currency: parsed.data.currency,
+      purpose: parsed.data.purpose,
       isDefault: false,
       userId: session.userId,
     },
@@ -106,6 +110,7 @@ export async function updateAccountAction(
   const parsed = accountSchema.safeParse({
     name: formData.get("name"),
     currency: formData.get("currency"),
+    purpose: parseAccountPurpose(formData.get("purpose")),
     isDefault: formData.get("isDefault") === "on",
   });
 
@@ -140,6 +145,7 @@ export async function updateAccountAction(
     data: {
       name: parsed.data.name,
       currency: parsed.data.currency,
+      purpose: parsed.data.purpose,
     },
   });
 

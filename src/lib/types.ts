@@ -11,6 +11,13 @@ export type CurrencyCode = "ARS" | "USD";
 
 export type BalanceKind = "start" | "end";
 
+export type AccountPurpose = "spending" | "savings";
+
+export const ACCOUNT_PURPOSE_LABELS: Record<AccountPurpose, string> = {
+  spending: "Gastos corrientes / corto plazo",
+  savings: "Ahorro / inversión",
+};
+
 export const CATEGORY_TYPE_LABELS: Record<CategoryType, string> = {
   income: "Ingreso",
   expense: "Gasto",

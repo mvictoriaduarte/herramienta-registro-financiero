@@ -5,11 +5,17 @@ import { useRouter } from "next/navigation";
 import { createAccountAction, updateAccountAction } from "@/actions/accounts";
 import { useCreatePlusClose } from "@/components/CreatePlusModal";
 import { Button, Field, FormMessage, Input, Select } from "@/components/ui";
+import { parseAccountPurpose } from "@/lib/finance";
+import {
+  ACCOUNT_PURPOSE_LABELS,
+  type AccountPurpose,
+} from "@/lib/types";
 
 type AccountValues = {
   id: string;
   name: string;
   currency: string;
+  purpose: AccountPurpose;
   isDefault: boolean;
 };
 
@@ -48,12 +54,51 @@ function DefaultToggle({
   );
 }
 
+function PurposePicker({
+  value,
+  onChange,
+}: {
+  value: AccountPurpose;
+  onChange: (next: AccountPurpose) => void;
+}) {
+  return (
+    <div className="block space-y-2">
+      <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+        Tipo de cuenta
+      </span>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {(["spending", "savings"] as const).map((purpose) => {
+          const selected = value === purpose;
+          return (
+            <button
+              key={purpose}
+              type="button"
+              onClick={() => onChange(purpose)}
+              className={`rounded-2xl px-4 py-3 text-left text-sm font-medium transition ${
+                selected
+                  ? "bg-petroleum text-white"
+                  : "bg-white/40 text-ink hover:bg-white/70"
+              }`}
+            >
+              {ACCOUNT_PURPOSE_LABELS[purpose]}
+            </button>
+          );
+        })}
+      </div>
+      <input type="hidden" name="purpose" value={value} />
+    </div>
+  );
+}
+
 function AccountFields({
   defaults,
 }: {
   defaults?: Partial<AccountValues>;
 }) {
   const [isDefault, setIsDefault] = useState(Boolean(defaults?.isDefault));
+  const [purpose, setPurpose] = useState<AccountPurpose>(
+    parseAccountPurpose(defaults?.purpose),
+  );
 
   return (
     <>
@@ -71,6 +116,7 @@ function AccountFields({
           <option value="USD">USD</option>
         </Select>
       </Field>
+      <PurposePicker value={purpose} onChange={setPurpose} />
       <DefaultToggle checked={isDefault} onChange={setIsDefault} />
     </>
   );

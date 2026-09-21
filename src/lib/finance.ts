@@ -1,4 +1,4 @@
-import type { BillingMode, CategoryType } from "@/lib/types";
+import type { AccountPurpose, BillingMode, CategoryType } from "@/lib/types";
 
 export function isIncomeCategory(type: string) {
   return type === "income";
@@ -14,6 +14,26 @@ export function isCurrentExpense(type: string) {
 
 export function isInternalMovement(type: string) {
   return type === "savings" || type === "neutral";
+}
+
+export function isSavingsAccount(purpose: string | null | undefined) {
+  return purpose === "savings";
+}
+
+export function parseAccountPurpose(value: unknown): AccountPurpose {
+  return value === "savings" ? "savings" : "spending";
+}
+
+export function inferAccountPurpose(name: string): AccountPurpose {
+  const normalized = name.toLowerCase();
+  if (
+    /superfondo|comitente|seguridad|invers|plazo fijo|\bfci\b|d[oó]lar|\busd\b|regalo/.test(
+      normalized,
+    )
+  ) {
+    return "savings";
+  }
+  return "spending";
 }
 
 export function transactionRefundTotal(
@@ -142,6 +162,50 @@ export function monthKey(year: number, month: number) {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+export function shiftYearMonth(year: number, month: number, delta: number) {
+  const date = new Date(year, month - 1 + delta, 1);
+  return { year: date.getFullYear(), month: date.getMonth() + 1 };
+}
+
+export function parseMonthKey(
+  value: string | undefined,
+  fallback: { year: number; month: number },
+) {
+  if (!value) {
+    return fallback;
+  }
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) {
+    return fallback;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isInteger(year) || month < 1 || month > 12) {
+    return fallback;
+  }
+  return { year, month };
+}
+
+export function isYearMonthAfter(
+  left: { year: number; month: number },
+  right: { year: number; month: number },
+) {
+  return left.year > right.year || (left.year === right.year && left.month > right.month);
+}
+
+export function holdingCurrency(
+  stored: string | null | undefined,
+  accountCurrency: string,
+): "ARS" | "USD" {
+  if (stored === "USD") {
+    return "USD";
+  }
+  if (accountCurrency === "USD") {
+    return "USD";
+  }
+  return "ARS";
+}
+
 export function percentChange(current: number, previous: number) {
   if (previous === 0) {
     return current === 0 ? 0 : null;
@@ -154,6 +218,37 @@ export function toUsd(amountArs: number, fxRate: number | null | undefined) {
     return null;
   }
   return Math.round((amountArs / fxRate) * 100) / 100;
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Convert a native holding to the other currency.
+ * ARS → USD uses BNA venta (you buy dollars from the bank).
+ * USD → ARS uses BNA compra (you sell dollars to the bank).
+ */
+export function convertHoldingAmount(
+  amount: number,
+  currency: "ARS" | "USD",
+  fx: { buy: number; sell: number } | null | undefined,
+) {
+  if (!fx || fx.buy <= 0 || fx.sell <= 0) {
+    return null;
+  }
+  if (currency === "USD") {
+    return { amountUsd: roundMoney(amount), amountArs: roundMoney(amount * fx.buy) };
+  }
+  return { amountArs: roundMoney(amount), amountUsd: roundMoney(amount / fx.sell) };
+}
+
+export function nativeHoldingAmount(item: {
+  currency: string;
+  amountArs: number;
+  amountUsd: number;
+}) {
+  return item.currency === "USD" ? item.amountUsd : item.amountArs;
 }
 
 export function formatPercent(value: number | null) {

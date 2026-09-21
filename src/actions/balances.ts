@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { ensureBnaFxRate } from "@/lib/bna-fx";
+import { convertHoldingAmount } from "@/lib/finance";
 import { parseAmount } from "@/lib/format";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
@@ -24,7 +26,26 @@ const balanceSchema = z.object({
   year: z.coerce.number().int().min(2000).max(2100),
   month: z.coerce.number().int().min(1).max(12),
   kind: z.enum(["start", "end"]),
+  currency: z.enum(["ARS", "USD"]),
 });
+
+async function amountsFromForm(formData: FormData) {
+  const currency = String(formData.get("currency") ?? "ARS") === "USD" ? "USD" : "ARS";
+  const amount = parseMoney(formData.get("amount"));
+  if (Number.isNaN(amount)) {
+    return { error: "El monto no es válido." as const };
+  }
+  if (amount === 0) {
+    return { currency, amountArs: 0, amountUsd: 0 };
+  }
+
+  const fx = await ensureBnaFxRate();
+  const converted = convertHoldingAmount(amount, currency, fx);
+  if (!converted) {
+    return { error: "No hay tipo de cambio BNA disponible." as const };
+  }
+  return { currency, ...converted };
+}
 
 export async function upsertAccountBalanceAction(
   _prev: ActionState,
@@ -36,17 +57,16 @@ export async function upsertAccountBalanceAction(
     year: formData.get("year"),
     month: formData.get("month"),
     kind: formData.get("kind"),
+    currency: formData.get("currency"),
   });
 
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
   }
 
-  const amountArs = parseMoney(formData.get("amountArs"));
-  const amountUsd = parseMoney(formData.get("amountUsd"));
-
-  if (Number.isNaN(amountArs) || Number.isNaN(amountUsd)) {
-    return { error: "Los montos no son válidos." };
+  const amounts = await amountsFromForm(formData);
+  if ("error" in amounts) {
+    return { error: amounts.error };
   }
 
   const account = await prisma.account.findFirst({
@@ -67,21 +87,98 @@ export async function upsertAccountBalanceAction(
         kind: parsed.data.kind,
       },
     },
-    update: { amountArs, amountUsd },
+    update: {
+      currency: amounts.currency,
+      amountArs: amounts.amountArs,
+      amountUsd: amounts.amountUsd,
+    },
     create: {
       year: parsed.data.year,
       month: parsed.data.month,
       kind: parsed.data.kind,
-      amountArs,
-      amountUsd,
+      currency: amounts.currency,
+      amountArs: amounts.amountArs,
+      amountUsd: amounts.amountUsd,
       accountId: account.id,
       userId: session.userId,
     },
   });
 
-  revalidatePath("/tenencias");
+  revalidatePath("/tenencias", "layout");
   revalidatePath("/dashboard");
   return { success: "Tenencia guardada." };
+}
+
+export async function updateAccountBalanceAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const session = await requireUser();
+  const id = String(formData.get("id") ?? "");
+  const parsed = balanceSchema.safeParse({
+    accountId: formData.get("accountId"),
+    year: formData.get("year"),
+    month: formData.get("month"),
+    kind: formData.get("kind"),
+    currency: formData.get("currency"),
+  });
+
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
+  }
+
+  const amounts = await amountsFromForm(formData);
+  if ("error" in amounts) {
+    return { error: amounts.error };
+  }
+
+  const balance = await prisma.accountBalance.findFirst({
+    where: { id, userId: session.userId },
+  });
+
+  if (!balance) {
+    return { error: "Tenencia no encontrada." };
+  }
+
+  const account = await prisma.account.findFirst({
+    where: { id: parsed.data.accountId, userId: session.userId },
+  });
+
+  if (!account) {
+    return { error: "Cuenta no encontrada." };
+  }
+
+  const clash = await prisma.accountBalance.findFirst({
+    where: {
+      userId: session.userId,
+      accountId: account.id,
+      year: parsed.data.year,
+      month: parsed.data.month,
+      kind: parsed.data.kind,
+      NOT: { id: balance.id },
+    },
+  });
+
+  if (clash) {
+    return { error: "Ya hay una tenencia para esa cuenta, mes y momento." };
+  }
+
+  await prisma.accountBalance.update({
+    where: { id: balance.id },
+    data: {
+      accountId: account.id,
+      year: parsed.data.year,
+      month: parsed.data.month,
+      kind: parsed.data.kind,
+      currency: amounts.currency,
+      amountArs: amounts.amountArs,
+      amountUsd: amounts.amountUsd,
+    },
+  });
+
+  revalidatePath("/tenencias", "layout");
+  revalidatePath("/dashboard");
+  return { success: "Tenencia actualizada." };
 }
 
 export async function deleteAccountBalanceAction(formData: FormData) {
@@ -97,6 +194,6 @@ export async function deleteAccountBalanceAction(formData: FormData) {
   }
 
   await prisma.accountBalance.delete({ where: { id: balance.id } });
-  revalidatePath("/tenencias");
+  revalidatePath("/tenencias", "layout");
   revalidatePath("/dashboard");
 }

@@ -27,9 +27,8 @@ export function AppNav({
       <div className="glass-panel flex flex-col gap-4 rounded-[28px] px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <Link href="/dashboard" className="font-display text-xl text-petroleum">
-            Registro financiero
+            Hola, {username}
           </Link>
-          <p className="text-sm text-muted">Hola, {username}</p>
         </div>
         <nav className="flex flex-wrap items-center gap-2">
           {links.map((link) => {

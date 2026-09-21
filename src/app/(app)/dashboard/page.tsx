@@ -4,6 +4,7 @@ import {
   computeIncomeTotal,
   isCurrentExpense,
   isInternalMovement,
+  isSavingsAccount,
   monthLabel,
   transactionDisplayParts,
 } from "@/lib/finance";
@@ -45,6 +46,7 @@ export default async function DashboardPage() {
       }),
       prisma.accountBalance.findMany({
         where: { userId: session.userId, year, month },
+        include: { account: true },
       }),
       prisma.transaction.findMany({
         where: {
@@ -156,9 +158,17 @@ export default async function DashboardPage() {
     1,
   );
 
-  const endHoldingsArs = balances
-    .filter((item) => item.kind === "end")
-    .reduce((sum, item) => sum + item.amountArs, 0);
+  const endHoldings = balances.filter((item) => item.kind === "end");
+  const savingsHoldings = endHoldings.filter((item) =>
+    isSavingsAccount(item.account.purpose),
+  );
+  const spendingHoldings = endHoldings.filter(
+    (item) => !isSavingsAccount(item.account.purpose),
+  );
+  const sumArs = (items: typeof endHoldings) =>
+    items.reduce((sum, item) => sum + item.amountArs, 0);
+  const sumUsd = (items: typeof endHoldings) =>
+    items.reduce((sum, item) => sum + item.amountUsd, 0);
 
   return (
     <main className="space-y-6">
@@ -193,7 +203,7 @@ export default async function DashboardPage() {
         </GlassCard>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-2">
         <GlassCard className="animate-in delay-2">
           <p className="text-sm text-muted">Ahorro / inversión (salidas)</p>
           <p className="mt-3 font-display text-2xl text-petroleum">
@@ -206,10 +216,28 @@ export default async function DashboardPage() {
             {formatMoney(internalOut)}
           </p>
         </GlassCard>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
         <GlassCard className="animate-in delay-4">
-          <p className="text-sm text-muted">Tenencias fin de mes (ARS)</p>
+          <p className="text-sm text-muted">Tenencias de ahorro / inversión</p>
           <p className="mt-3 font-display text-2xl text-petroleum">
-            {formatMoney(endHoldingsArs)}
+            {formatMoney(sumArs(savingsHoldings))}
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            USD {formatMoney(sumUsd(savingsHoldings), "USD")}
+          </p>
+          <Link href="/tenencias" className="mt-2 inline-block text-sm text-petroleum-soft">
+            Ver tenencias
+          </Link>
+        </GlassCard>
+        <GlassCard className="animate-in delay-4">
+          <p className="text-sm text-muted">Tenencias de gastos corrientes</p>
+          <p className="mt-3 font-display text-2xl text-petroleum">
+            {formatMoney(sumArs(spendingHoldings))}
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            USD {formatMoney(sumUsd(spendingHoldings), "USD")}
           </p>
           <Link href="/tenencias" className="mt-2 inline-block text-sm text-petroleum-soft">
             Ver tenencias

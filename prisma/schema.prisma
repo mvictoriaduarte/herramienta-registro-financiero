@@ -26,6 +26,7 @@ model Account {
   id           String           @id @default(cuid())
   name         String
   currency     String           @default("ARS")
+  purpose      String           @default("spending")
   active       Boolean          @default(true)
   isDefault    Boolean          @default(false)
   userId       String
@@ -132,6 +133,7 @@ model AccountBalance {
   year      Int
   month     Int
   kind      String
+  currency  String   @default("ARS")
   amountArs Float    @default(0)
   amountUsd Float    @default(0)
   accountId String

@@ -80,6 +80,18 @@ function accountCurrency(name: string): "ARS" | "USD" {
   return name.includes("(USD)") ? "USD" : "ARS";
 }
 
+function accountPurpose(name: string): "spending" | "savings" {
+  const normalized = name.toLowerCase();
+  if (
+    /superfondo|comitente|seguridad|invers|plazo fijo|\bfci\b|d[oó]lar|\busd\b|regalo/.test(
+      normalized,
+    )
+  ) {
+    return "savings";
+  }
+  return "spending";
+}
+
 const MONTH_SHEET_NAMES: Record<number, string> = {
   1: "Enero",
   2: "Febrero",
@@ -283,6 +295,7 @@ async function main() {
       data: {
         name,
         currency: accountCurrency(name),
+        purpose: accountPurpose(name),
         userId: user.id,
       },
     });
@@ -538,6 +551,7 @@ async function main() {
           data: {
             name: accountName,
             currency: accountCurrency(accountName),
+            purpose: accountPurpose(accountName),
             userId: user.id,
           },
         });

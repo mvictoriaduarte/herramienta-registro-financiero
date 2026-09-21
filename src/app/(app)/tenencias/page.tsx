@@ -1,9 +1,8 @@
-import { deleteAccountBalanceAction } from "@/actions/balances";
 import { BalanceForm } from "@/components/BalanceForm";
 import { CreatePlusModal } from "@/components/CreatePlusModal";
-import { DeleteButton } from "@/components/DeleteButton";
+import { HoldingAccountRow } from "@/components/HoldingAccountRow";
 import { GlassCard } from "@/components/ui";
-import { monthLabel } from "@/lib/finance";
+import { ensureBnaFxRate } from "@/lib/bna-fx";
 import { currentYearMonth, formatMoney } from "@/lib/format";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
@@ -11,43 +10,64 @@ import { prisma } from "@/lib/prisma";
 export default async function HoldingsPage() {
   const session = await requireUser();
   const now = currentYearMonth();
+  const bnaFx = await ensureBnaFxRate();
 
-  const [accounts, balances] = await Promise.all([
+  const [accounts, monthBalances] = await Promise.all([
     prisma.account.findMany({
       where: { userId: session.userId },
       orderBy: { name: "asc" },
     }),
     prisma.accountBalance.findMany({
-      where: { userId: session.userId },
-      include: { account: true },
-      orderBy: [{ year: "desc" }, { month: "desc" }, { kind: "asc" }],
+      where: {
+        userId: session.userId,
+        year: now.year,
+        month: now.month,
+      },
     }),
   ]);
 
-  const current = balances.filter(
-    (item) => item.year === now.year && item.month === now.month,
-  );
+  const startArs = monthBalances
+    .filter((item) => item.kind === "start")
+    .reduce((sum, item) => sum + item.amountArs, 0);
+  const endArs = monthBalances
+    .filter((item) => item.kind === "end")
+    .reduce((sum, item) => sum + item.amountArs, 0);
+  const startUsd = monthBalances
+    .filter((item) => item.kind === "start")
+    .reduce((sum, item) => sum + item.amountUsd, 0);
+  const endUsd = monthBalances
+    .filter((item) => item.kind === "end")
+    .reduce((sum, item) => sum + item.amountUsd, 0);
 
-  const startArs = current
-    .filter((item) => item.kind === "start")
-    .reduce((sum, item) => sum + item.amountArs, 0);
-  const endArs = current
-    .filter((item) => item.kind === "end")
-    .reduce((sum, item) => sum + item.amountArs, 0);
-  const startUsd = current
-    .filter((item) => item.kind === "start")
-    .reduce((sum, item) => sum + item.amountUsd, 0);
-  const endUsd = current
-    .filter((item) => item.kind === "end")
-    .reduce((sum, item) => sum + item.amountUsd, 0);
+  const rows = accounts.map((account) => {
+    const records = monthBalances.filter((item) => item.accountId === account.id);
+    const current =
+      records.find((item) => item.kind === "end") ??
+      records.find((item) => item.kind === "start") ??
+      null;
+    return { account, current };
+  });
 
   return (
     <main className="space-y-6">
       <div className="animate-in relative flex min-h-12 items-center">
-        <h1 className="font-display text-4xl text-petroleum">Tenencias</h1>
+        <div>
+          <h1 className="font-display text-4xl text-petroleum">Tenencias</h1>
+          {bnaFx ? (
+            <p className="mt-1 text-sm text-muted">
+              TC BNA compra{" "}
+              {bnaFx.buy.toLocaleString("es-AR", { minimumFractionDigits: 2 })} · venta{" "}
+              {bnaFx.sell.toLocaleString("es-AR", { minimumFractionDigits: 2 })}
+            </p>
+          ) : null}
+        </div>
         <div className="absolute right-0 top-1/2 -translate-y-1/2">
           <CreatePlusModal title="Cargar tenencia" ariaLabel="Cargar tenencia">
-            <BalanceForm accounts={accounts} />
+            <BalanceForm
+              accounts={accounts}
+              bnaFx={bnaFx}
+              defaults={{ year: now.year, month: now.month }}
+            />
           </CreatePlusModal>
         </div>
       </div>
@@ -69,32 +89,13 @@ export default async function HoldingsPage() {
       </div>
 
       <GlassCard className="animate-in delay-3">
-        <h2 className="mb-5 font-display text-2xl text-petroleum">Historial</h2>
-        {balances.length === 0 ? (
-          <p className="text-sm text-muted">
-            Registrá el saldo de cada cuenta al inicio y al fin del mes.
-          </p>
+        <h2 className="mb-5 font-display text-2xl text-petroleum">Cuentas</h2>
+        {rows.length === 0 ? (
+          <p className="text-sm text-muted">Creá una cuenta para ver tenencias.</p>
         ) : (
           <ul className="space-y-3">
-            {balances.map((item) => (
-              <li
-                key={item.id}
-                className="flex flex-col gap-3 rounded-2xl bg-white/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="font-medium">{item.account.name}</p>
-                  <p className="text-sm text-muted">
-                    {monthLabel(item.month)} {item.year} ·{" "}
-                    {item.kind === "start" ? "Inicio" : "Fin"}
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <p className="text-sm font-semibold text-petroleum">
-                    {formatMoney(item.amountArs)} · {formatMoney(item.amountUsd, "USD")}
-                  </p>
-                  <DeleteButton action={deleteAccountBalanceAction} id={item.id} />
-                </div>
-              </li>
+            {rows.map(({ account, current }) => (
+              <HoldingAccountRow key={account.id} account={account} current={current} />
             ))}
           </ul>
         )}
