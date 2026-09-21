@@ -119,26 +119,46 @@ export function MovementListItem({
 
       {item.refunds.length > 0 ? (
         <ul className="space-y-2 border-t border-white/50 pt-3">
-          {item.refunds.map((refund) => (
-            <li key={refund.id} className="flex items-center justify-between gap-3 text-sm">
-              <span className="text-muted">
-                Devolución
-                {refund.note ? ` · ${refund.note}` : ""}
-                {refund.date ? ` · ${formatDate(refund.date)}` : ""}
-              </span>
-              <span className="flex items-center gap-3">
-                <span className="font-medium text-petroleum">
-                  +{formatMoney(refund.amount, item.currency as "ARS" | "USD")}
+          {item.refunds.map((refund) => {
+            const maxAllowed = Math.round((remaining + refund.amount) * 100) / 100;
+            return (
+              <li key={refund.id} className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-muted">
+                  Devolución
+                  {refund.note ? ` · ${refund.note}` : ""}
+                  {refund.date ? ` · ${formatDate(refund.date)}` : ""}
                 </span>
-                <DeleteButton
-                  action={deleteTransactionRefundAction}
-                  id={refund.id}
-                  label="Borrar devolución"
-                  icon
-                />
-              </span>
-            </li>
-          ))}
+                <span className="flex items-center gap-1.5">
+                  <span className="mr-1 font-medium text-petroleum">
+                    +{formatMoney(refund.amount, item.currency as "ARS" | "USD")}
+                  </span>
+                  <CreatePlusModal
+                    title="Editar devolución"
+                    ariaLabel="Editar devolución"
+                    trigger={<IconPencil />}
+                  >
+                    <TransactionRefundForm
+                      transactionId={item.id}
+                      remaining={maxAllowed}
+                      currency={item.currency}
+                      defaults={{
+                        id: refund.id,
+                        amount: refund.amount,
+                        note: refund.note,
+                        date: refund.date,
+                      }}
+                    />
+                  </CreatePlusModal>
+                  <DeleteButton
+                    action={deleteTransactionRefundAction}
+                    id={refund.id}
+                    label="Borrar devolución"
+                    icon
+                  />
+                </span>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
     </li>

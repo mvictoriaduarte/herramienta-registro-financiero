@@ -1,27 +1,19 @@
 import { notFound } from "next/navigation";
-import {
-  deleteIncomeAdjustmentAction,
-  deleteIncomePeriodAction,
-} from "@/actions/income";
 import { CreatePlusModal } from "@/components/CreatePlusModal";
-import { DeleteButton } from "@/components/DeleteButton";
 import { RateSparkline } from "@/components/IncomeCharts";
-import {
-  IncomeAdjustmentForm,
-  IncomePeriodForm,
-} from "@/components/IncomeForms";
+import { IncomePeriodForm } from "@/components/IncomeForms";
+import { IncomePeriodsTable } from "@/components/IncomePeriodsTable";
 import { SourceHeader } from "@/components/SourceHeader";
 import { GlassCard } from "@/components/ui";
 import { ensureBnaFxRate, resolveFxRate } from "@/lib/bna-fx";
 import {
   computeIncomeTotal,
   formatPercent,
-  monthLabel,
   percentChange,
   toUsd,
   billingValueLabel,
 } from "@/lib/finance";
-import { formatMoney } from "@/lib/format";
+import { formatDate, formatMoney, toDateInputValue } from "@/lib/format";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import { type BillingMode } from "@/lib/types";
@@ -46,7 +38,7 @@ export default async function IncomeSourcePage({ params }: PageProps) {
   const periods = await prisma.incomePeriod.findMany({
     where: { userId: session.userId, sourceId: source.id },
     include: { adjustments: { orderBy: { name: "asc" } } },
-    orderBy: [{ year: "desc" }, { month: "desc" }],
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
   });
 
   const mode = source.billingMode as BillingMode;
@@ -90,8 +82,8 @@ export default async function IncomeSourcePage({ params }: PageProps) {
             {latest ? formatMoney(latest.total) : "—"}
           </p>
           {latest ? (
-            <p className="mt-1 text-sm capitalize text-muted">
-              {monthLabel(latest.period.month)} {latest.period.year}
+            <p className="mt-1 text-sm text-muted">
+              {formatDate(latest.period.date)}
             </p>
           ) : null}
         </GlassCard>
@@ -139,7 +131,11 @@ export default async function IncomeSourcePage({ params }: PageProps) {
       <GlassCard className="animate-in delay-3 overflow-x-auto">
         <div className="mb-5 flex items-center justify-between gap-3">
           <h2 className="font-display text-2xl text-petroleum">Ingresos mes a mes</h2>
-          <CreatePlusModal title="Registrar período" ariaLabel="Registrar período">
+          <CreatePlusModal
+            title="Registrar ingreso"
+            ariaLabel="Registrar ingreso"
+            size="lg"
+          >
             <IncomePeriodForm
               sourceId={source.id}
               billingMode={source.billingMode}
@@ -148,98 +144,49 @@ export default async function IncomeSourcePage({ params }: PageProps) {
           </CreatePlusModal>
         </div>
         {rows.length === 0 ? (
-          <p className="text-sm text-muted">Todavía no cargaste períodos en esta fuente.</p>
+          <p className="text-sm text-muted">Todavía no cargaste ingresos en esta fuente.</p>
         ) : (
-          <table className="min-w-full border-separate border-spacing-y-2 text-sm">
-            <thead>
-              <tr className="text-left text-muted">
-                <th className="px-3 py-2">Período</th>
-                <th className="px-3 py-2">Detalle</th>
-                <th className="px-3 py-2">Total ARS</th>
-                <th className="px-3 py-2">USD</th>
-                <th className="px-3 py-2">Δ %</th>
-                <th className="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => {
-                const older = rows[index + 1];
-                const change = percentChange(row.total, older?.total ?? 0);
-                const usd = toUsd(row.total, fx);
-                const detail =
-                  mode === "monthly"
-                    ? `Fijo ${formatMoney(row.base)}`
-                    : `${row.period.units ?? 0} × ${formatMoney(row.period.unitValue ?? 0)}`;
+          <IncomePeriodsTable
+            sourceId={source.id}
+            billingMode={source.billingMode}
+            accentColor={source.color}
+            rows={rows.map((row, index) => {
+              const older = rows[index + 1];
+              const change = percentChange(row.total, older?.total ?? 0);
+              const usd = toUsd(row.total, fx);
+              const adjLabel =
+                row.period.adjustments.length > 0
+                  ? ` · ${row.period.adjustments.length} adicional${
+                      row.period.adjustments.length === 1 ? "" : "es"
+                    }`
+                  : "";
+              const detail =
+                mode === "monthly"
+                  ? `Fijo ${formatMoney(row.base)}${adjLabel}`
+                  : `${row.period.units ?? 0} × ${formatMoney(row.period.unitValue ?? 0)}${adjLabel}`;
 
-                return (
-                  <tr key={row.period.id} className="bg-white/40">
-                    <td className="rounded-l-2xl px-3 py-3 capitalize">
-                      {monthLabel(row.period.month)} {row.period.year}
-                    </td>
-                    <td className="px-3 py-3 text-muted">{detail}</td>
-                    <td className="px-3 py-3 font-semibold" style={{ color: source.color }}>
-                      {formatMoney(row.total)}
-                    </td>
-                    <td className="px-3 py-3">
-                      {usd !== null ? formatMoney(usd, "USD") : "—"}
-                    </td>
-                    <td className="px-3 py-3">{formatPercent(older ? change : null)}</td>
-                    <td className="rounded-r-2xl px-3 py-3">
-                      <DeleteButton action={deleteIncomePeriodAction} id={row.period.id} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+              return {
+                id: row.period.id,
+                date: toDateInputValue(row.period.date),
+                note: row.period.note,
+                year: row.period.year,
+                month: row.period.month,
+                units: row.period.units,
+                unitValue: row.period.unitValue,
+                fixedAmount: row.period.fixedAmount,
+                adjustments: row.period.adjustments.map((item) => ({
+                  name: item.name,
+                  amount: item.amount,
+                })),
+                total: row.total,
+                detail,
+                usd,
+                change: older ? change : null,
+              };
+            })}
+          />
         )}
       </GlassCard>
-
-      {rows.map((row) => (
-        <GlassCard key={`adj-${row.period.id}`} className="animate-in delay-4">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="font-display text-xl text-petroleum">
-                Adicionales · {monthLabel(row.period.month)} {row.period.year}
-              </h2>
-              <p className="mt-1 text-sm text-muted">
-                Base {formatMoney(row.base)} · Neto {formatMoney(row.total)}
-              </p>
-            </div>
-            <CreatePlusModal
-              title={`Adicional · ${monthLabel(row.period.month)} ${row.period.year}`}
-              ariaLabel="Sumar adicional"
-            >
-              <IncomeAdjustmentForm
-                periodId={row.period.id}
-                accentColor={source.color}
-              />
-            </CreatePlusModal>
-          </div>
-          {row.period.adjustments.length > 0 ? (
-            <ul className="space-y-2">
-              {row.period.adjustments.map((adj) => (
-                <li
-                  key={adj.id}
-                  className="flex items-center justify-between gap-3 rounded-2xl bg-white/40 px-4 py-3 text-sm"
-                >
-                  <span>{adj.name}</span>
-                  <span className="flex items-center gap-3">
-                    {formatMoney(adj.amount)}
-                    <DeleteButton
-                      action={deleteIncomeAdjustmentAction}
-                      id={adj.id}
-                      label="×"
-                    />
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-muted">Sin adicionales en este período.</p>
-          )}
-        </GlassCard>
-      ))}
     </main>
   );
 }

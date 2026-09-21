@@ -212,8 +212,9 @@ function parseOptionalAmount(value: FormDataEntryValue | null) {
 
 const periodSchema = z.object({
   sourceId: z.string().min(1),
-  year: z.coerce.number().int().min(2000).max(2100),
-  month: z.coerce.number().int().min(1).max(12),
+  id: z.string().optional(),
+  date: z.string().min(1, "Elegí una fecha."),
+  note: z.string().trim().max(200, "La descripción es demasiado larga.").optional(),
 });
 
 export async function upsertIncomePeriodAction(
@@ -223,8 +224,9 @@ export async function upsertIncomePeriodAction(
   const session = await requireUser();
   const parsed = periodSchema.safeParse({
     sourceId: formData.get("sourceId"),
-    year: formData.get("year"),
-    month: formData.get("month"),
+    id: formData.get("id") || undefined,
+    date: formData.get("date"),
+    note: formData.get("note") ?? "",
   });
 
   if (!parsed.success) {
@@ -238,6 +240,15 @@ export async function upsertIncomePeriodAction(
   if (!source) {
     return { error: "Fuente no encontrada." };
   }
+
+  const date = new Date(`${parsed.data.date}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return { error: "La fecha no es válida." };
+  }
+
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const note = parsed.data.note ?? "";
 
   const billingMode = source.billingMode as BillingMode;
   let units: number | null = null;
@@ -262,29 +273,78 @@ export async function upsertIncomePeriodAction(
     return { error: "El monto base no puede ser negativo." };
   }
 
-  await prisma.incomePeriod.upsert({
-    where: {
-      userId_sourceId_year_month: {
+  const adjNames = formData.getAll("adjName").map((item) => String(item).trim());
+  const adjAmounts = formData.getAll("adjAmount").map((item) => String(item).trim());
+  const adjustments: { name: string; amount: number }[] = [];
+  for (let i = 0; i < adjNames.length; i += 1) {
+    const name = adjNames[i] ?? "";
+    const amountRaw = adjAmounts[i] ?? "";
+    if (!name && !amountRaw) {
+      continue;
+    }
+    if (name.length < 2) {
+      return { error: "Cada adicional necesita un nombre." };
+    }
+    const amount = parseAmount(amountRaw);
+    if (!Number.isFinite(amount)) {
+      return { error: `Monto inválido en el adicional “${name}”.` };
+    }
+    adjustments.push({ name, amount: Math.round(amount * 100) / 100 });
+  }
+
+  if (parsed.data.id) {
+    const existing = await prisma.incomePeriod.findFirst({
+      where: {
+        id: parsed.data.id,
         userId: session.userId,
         sourceId: source.id,
-        year: parsed.data.year,
-        month: parsed.data.month,
       },
-    },
-    update: { units, unitValue, fixedAmount },
-    create: {
-      year: parsed.data.year,
-      month: parsed.data.month,
-      units,
-      unitValue,
-      fixedAmount,
-      sourceId: source.id,
-      userId: session.userId,
-    },
-  });
+    });
+    if (!existing) {
+      return { error: "Ingreso no encontrado." };
+    }
+    await prisma.incomePeriod.update({
+      where: { id: existing.id },
+      data: { year, month, date, note, units, unitValue, fixedAmount },
+    });
+    await prisma.incomeAdjustment.deleteMany({ where: { periodId: existing.id } });
+    if (adjustments.length > 0) {
+      await prisma.incomeAdjustment.createMany({
+        data: adjustments.map((item) => ({
+          name: item.name,
+          amount: item.amount,
+          periodId: existing.id,
+        })),
+      });
+    }
+  } else {
+    const created = await prisma.incomePeriod.create({
+      data: {
+        year,
+        month,
+        date,
+        note,
+        units,
+        unitValue,
+        fixedAmount,
+        sourceId: source.id,
+        userId: session.userId,
+        adjustments:
+          adjustments.length > 0
+            ? {
+                create: adjustments.map((item) => ({
+                  name: item.name,
+                  amount: item.amount,
+                })),
+              }
+            : undefined,
+      },
+    });
+    void created;
+  }
 
   revalidateIncome(source.id);
-  return { success: "Período guardado." };
+  return { success: "Ingreso guardado." };
 }
 
 export async function addIncomeAdjustmentAction(
@@ -349,9 +409,10 @@ export async function deleteIncomePeriodAction(formData: FormData) {
   });
 
   if (!period) {
-    return;
+    return { error: "Ingreso no encontrado." };
   }
 
   await prisma.incomePeriod.delete({ where: { id: period.id } });
   revalidateIncome(period.sourceId);
+  return { success: "Ingreso eliminado." };
 }

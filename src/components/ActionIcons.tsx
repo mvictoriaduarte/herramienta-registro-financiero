@@ -13,8 +13,8 @@ export function IconRefund({ className = "h-4 w-4" }: { className?: string }) {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M3 12a9 9 0 1 0 9-9" />
-      <path d="M3 5v7h7" />
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11" />
     </svg>
   );
 }

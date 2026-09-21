@@ -1,9 +1,8 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  addIncomeAdjustmentAction,
   updateIncomeSourceAction,
   upsertIncomePeriodAction,
 } from "@/actions/income";
@@ -11,7 +10,7 @@ import { ColorPickerField } from "@/components/ColorPickerField";
 import { useCreatePlusClose } from "@/components/CreatePlusModal";
 import { Button, Field, FormMessage, Input, Select } from "@/components/ui";
 import { billingUnitLabel, billingValueLabel } from "@/lib/finance";
-import { currentYearMonth } from "@/lib/format";
+import { toDateInputValue } from "@/lib/format";
 import { BILLING_MODE_LABELS, type BillingMode } from "@/lib/types";
 
 export function IncomeSourceSettingsForm({
@@ -104,18 +103,37 @@ export function IncomePeriodForm({
   sourceId,
   billingMode,
   accentColor,
+  defaults,
 }: {
   sourceId: string;
   billingMode: string;
   accentColor?: string;
+  defaults?: {
+    id?: string;
+    date: string;
+    note?: string;
+    units: number | null;
+    unitValue: number | null;
+    fixedAmount: number | null;
+    adjustments?: { name: string; amount: number }[];
+  };
 }) {
   const router = useRouter();
   const close = useCreatePlusClose();
   const [state, action, pending] = useActionState(upsertIncomePeriodAction, null);
-  const now = currentYearMonth();
   const mode = billingMode as BillingMode;
   const unitLabel = billingUnitLabel(mode);
   const valueLabel = billingValueLabel(mode);
+  const isEdit = Boolean(defaults?.id);
+  const [adjustments, setAdjustments] = useState<
+    { key: string; name: string; amount: string }[]
+  >(() =>
+    (defaults?.adjustments ?? []).map((item, index) => ({
+      key: `adj-${index}`,
+      name: item.name,
+      amount: String(item.amount),
+    })),
+  );
 
   useEffect(() => {
     if (state?.success) {
@@ -124,26 +142,43 @@ export function IncomePeriodForm({
     }
   }, [state, close, router]);
 
+  function addAdjustment() {
+    setAdjustments((prev) => [
+      ...prev,
+      { key: `adj-${Date.now()}-${prev.length}`, name: "", amount: "" },
+    ]);
+  }
+
   return (
     <form action={action} className="grid gap-4">
       <input type="hidden" name="sourceId" value={sourceId} />
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="Año">
-          <Input name="year" type="number" defaultValue={now.year} required />
-        </Field>
-        <Field label="Mes">
-          <Select name="month" defaultValue={String(now.month)}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((month) => (
-              <option key={month} value={month}>
-                {month}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      </div>
+      {defaults?.id ? <input type="hidden" name="id" value={defaults.id} /> : null}
+      <Field label="Fecha">
+        <Input
+          name="date"
+          type="date"
+          defaultValue={defaults?.date ?? toDateInputValue()}
+          required
+        />
+      </Field>
+      <Field label="Descripción">
+        <Input
+          name="note"
+          placeholder="Opcional"
+          defaultValue={defaults?.note ?? ""}
+        />
+      </Field>
       {mode === "monthly" ? (
         <Field label={valueLabel}>
-          <Input name="fixedAmount" inputMode="decimal" placeholder="1500000" required />
+          <Input
+            name="fixedAmount"
+            inputMode="decimal"
+            placeholder="1500000"
+            required
+            defaultValue={
+              defaults?.fixedAmount != null ? String(defaults.fixedAmount) : ""
+            }
+          />
         </Field>
       ) : (
         <>
@@ -153,6 +188,7 @@ export function IncomePeriodForm({
               inputMode="decimal"
               placeholder={mode === "project" ? "1" : "160"}
               required
+              defaultValue={defaults?.units != null ? String(defaults.units) : ""}
             />
           </Field>
           <Field label={valueLabel}>
@@ -161,10 +197,70 @@ export function IncomePeriodForm({
               inputMode="decimal"
               placeholder={mode === "project" ? "500000" : "11500"}
               required
+              defaultValue={
+                defaults?.unitValue != null ? String(defaults.unitValue) : ""
+              }
             />
           </Field>
         </>
       )}
+
+      <div className="space-y-2">
+        <button
+          type="button"
+          onClick={addAdjustment}
+          className="w-full rounded-2xl bg-petroleum px-4 py-3 text-sm font-semibold text-white transition hover:bg-petroleum-deep"
+        >
+          Agregar adicional
+        </button>
+        {adjustments.map((row) => (
+          <div
+            key={row.key}
+            className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_8rem_auto] sm:items-center"
+          >
+            <Input
+              name="adjName"
+              placeholder="Nombre del adicional"
+              value={row.name}
+              onChange={(event) =>
+                setAdjustments((prev) =>
+                  prev.map((item) =>
+                    item.key === row.key
+                      ? { ...item, name: event.target.value }
+                      : item,
+                  ),
+                )
+              }
+            />
+            <Input
+              name="adjAmount"
+              inputMode="decimal"
+              placeholder="Monto"
+              value={row.amount}
+              onChange={(event) =>
+                setAdjustments((prev) =>
+                  prev.map((item) =>
+                    item.key === row.key
+                      ? { ...item, amount: event.target.value }
+                      : item,
+                  ),
+                )
+              }
+            />
+            <button
+              type="button"
+              aria-label="Quitar adicional"
+              onClick={() =>
+                setAdjustments((prev) => prev.filter((item) => item.key !== row.key))
+              }
+              className="inline-flex h-11 items-center justify-center rounded-2xl px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50/80"
+            >
+              Quitar
+            </button>
+          </div>
+        ))}
+      </div>
+
       <FormMessage state={state} />
       <Button
         type="submit"
@@ -172,47 +268,7 @@ export function IncomePeriodForm({
         className="w-full"
         style={accentColor ? { backgroundColor: accentColor } : undefined}
       >
-        {pending ? "Guardando..." : "Registrar período"}
-      </Button>
-    </form>
-  );
-}
-
-export function IncomeAdjustmentForm({
-  periodId,
-  accentColor,
-}: {
-  periodId: string;
-  accentColor?: string;
-}) {
-  const router = useRouter();
-  const close = useCreatePlusClose();
-  const [state, action, pending] = useActionState(addIncomeAdjustmentAction, null);
-
-  useEffect(() => {
-    if (state?.success) {
-      close?.();
-      router.refresh();
-    }
-  }, [state, close, router]);
-
-  return (
-    <form action={action} className="grid gap-4">
-      <input type="hidden" name="periodId" value={periodId} />
-      <Field label="Adicional">
-        <Input name="name" placeholder="Monotributo, IA, aguinaldo..." required />
-      </Field>
-      <Field label="Monto">
-        <Input name="amount" inputMode="decimal" placeholder="-50000" required />
-      </Field>
-      <FormMessage state={state} />
-      <Button
-        type="submit"
-        disabled={pending}
-        className="w-full"
-        style={accentColor ? { backgroundColor: accentColor } : undefined}
-      >
-        {pending ? "Guardando..." : "Sumar adicional"}
+        {pending ? "Guardando..." : isEdit ? "Guardar cambios" : "Registrar ingreso"}
       </Button>
     </form>
   );

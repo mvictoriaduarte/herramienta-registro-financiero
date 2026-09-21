@@ -290,6 +290,71 @@ export async function addTransactionRefundAction(
   return { success: "Devolución registrada." };
 }
 
+export async function updateTransactionRefundAction(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const session = await requireUser();
+  const refundId = String(formData.get("refundId") ?? "");
+  const note = String(formData.get("note") ?? "").trim();
+  const amount = parseAmount(String(formData.get("amount") ?? ""));
+  const dateRaw = String(formData.get("date") ?? "").trim();
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { error: "Ingresá un monto de devolución mayor a cero." };
+  }
+
+  const refund = await prisma.transactionRefund.findFirst({
+    where: { id: refundId },
+    include: {
+      transaction: {
+        include: { refunds: true },
+      },
+    },
+  });
+
+  if (!refund || refund.transaction.userId !== session.userId) {
+    return { error: "Devolución no encontrada." };
+  }
+
+  const transaction = refund.transaction;
+  if (transaction.expenseAmount <= 0) {
+    return { error: "Solo se pueden editar devoluciones de gastos." };
+  }
+
+  const otherRefunded = transaction.refunds
+    .filter((item) => item.id !== refund.id)
+    .reduce((sum, item) => sum + item.amount, 0);
+  const maxAllowed = Math.round((transaction.expenseAmount - otherRefunded) * 100) / 100;
+  if (amount > maxAllowed + 0.001) {
+    return {
+      error: `La devolución no puede superar el saldo disponible (${maxAllowed.toLocaleString("es-AR")}).`,
+    };
+  }
+
+  let date: Date | null = null;
+  if (dateRaw) {
+    date = new Date(`${dateRaw}T12:00:00`);
+    if (Number.isNaN(date.getTime())) {
+      return { error: "La fecha de devolución no es válida." };
+    }
+  }
+
+  await prisma.transactionRefund.update({
+    where: { id: refund.id },
+    data: {
+      amount: Math.round(amount * 100) / 100,
+      note,
+      date,
+    },
+  });
+
+  revalidatePath("/movimientos");
+  revalidatePath("/dashboard");
+  revalidatePath("/tenencias");
+  return { success: "Devolución actualizada." };
+}
+
 export async function deleteTransactionRefundAction(formData: FormData) {
   const session = await requireUser();
   const id = String(formData.get("id") ?? "");

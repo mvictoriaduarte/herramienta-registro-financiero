@@ -80,6 +80,163 @@ function accountCurrency(name: string): "ARS" | "USD" {
   return name.includes("(USD)") ? "USD" : "ARS";
 }
 
+const MONTH_SHEET_NAMES: Record<number, string> = {
+  1: "Enero",
+  2: "Febrero",
+  3: "Marzo",
+  4: "Abril",
+  5: "Mayo",
+  6: "Junio",
+  7: "Julio",
+  8: "Agosto",
+  9: "Septiembre",
+  10: "Octubre",
+  11: "Noviembre",
+  12: "Diciembre",
+};
+
+/** Friday (or last known day) of a Mon–Sun day-of-month row, resolving month boundaries. */
+function fridayFromWeekDays(
+  sheetYear: number,
+  sheetMonth: number,
+  weekNumber: number,
+  dayCells: (number | null)[],
+): Date | null {
+  const nums = dayCells.filter((d): d is number => d != null);
+  if (nums.length === 0) {
+    return null;
+  }
+
+  let wrapAt = -1;
+  for (let i = 1; i < dayCells.length; i++) {
+    const prev = dayCells[i - 1];
+    const cur = dayCells[i];
+    if (prev != null && cur != null && cur < prev) {
+      wrapAt = i;
+      break;
+    }
+  }
+
+  let year = sheetYear;
+  let month = sheetMonth;
+  if (wrapAt >= 0 && weekNumber <= 2) {
+    // Semana al inicio del mes: los días altos pertenecen al mes anterior
+    month -= 1;
+    if (month < 1) {
+      month = 12;
+      year -= 1;
+    }
+  }
+
+  let prev: number | null = null;
+  const resolved: (Date | null)[] = [];
+  for (const day of dayCells) {
+    if (day == null) {
+      resolved.push(null);
+      continue;
+    }
+    if (prev != null && day < prev) {
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+    resolved.push(new Date(Date.UTC(year, month - 1, day, 12, 0, 0)));
+    prev = day;
+  }
+
+  return resolved[4] ?? resolved.find((d) => d != null) ?? null;
+}
+
+type AxisWeekTransfer = {
+  week: number;
+  amount: number;
+  date: Date;
+  year: number;
+  month: number;
+};
+
+/** Lee transferencias semanales de las hojas mensuales Axis (Semana / Ingresos / Cobrado?). */
+function extractAxisWeeklyTransfers(
+  wb: XLSX.WorkBook,
+  year: number,
+  month: number,
+): AxisWeekTransfer[] {
+  const sheetName = MONTH_SHEET_NAMES[month];
+  const sheet = sheetName ? wb.Sheets[sheetName] : undefined;
+  if (!sheet) {
+    return [];
+  }
+
+  const rows = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, {
+    header: 1,
+    defval: null,
+  });
+
+  const weekCols: { week: number; col: number }[] = [];
+  const headerRow = rows[0] ?? [];
+  for (let col = 0; col < headerRow.length; col++) {
+    const match = str(headerRow[col]).match(/semana\s*(\d+)/i);
+    if (match) {
+      weekCols.push({ week: Number(match[1]), col });
+    }
+  }
+
+  const fridayByWeek = new Map<number, Date>();
+  const dayRow = rows[2] ?? [];
+  for (const { week, col } of weekCols) {
+    const dayCells: (number | null)[] = [];
+    for (let offset = 0; offset < 7; offset++) {
+      dayCells.push(num(dayRow[col + offset]));
+    }
+    const friday = fridayFromWeekDays(year, month, week, dayCells);
+    if (friday) {
+      fridayByWeek.set(week, friday);
+    }
+  }
+
+  let summaryStart = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (
+      str(rows[i][0]).toLowerCase() === "semana" &&
+      /ingreso/i.test(str(rows[i][1]))
+    ) {
+      summaryStart = i + 1;
+      break;
+    }
+  }
+  if (summaryStart < 0) {
+    return [];
+  }
+
+  const transfers: AxisWeekTransfer[] = [];
+  for (let i = summaryStart; i < rows.length; i++) {
+    const week = num(rows[i][0]);
+    const amount = num(rows[i][1]);
+    if (week == null || week < 1 || week > 6) {
+      break;
+    }
+    if (amount == null || amount <= 0) {
+      continue;
+    }
+
+    const date =
+      fridayByWeek.get(week) ??
+      new Date(Date.UTC(year, month - 1, Math.min(28, week * 7), 12, 0, 0));
+
+    transfers.push({
+      week,
+      amount: Math.round(amount * 100) / 100,
+      date,
+      year,
+      month,
+    });
+  }
+
+  return transfers;
+}
+
 async function main() {
   const workbookPath = path.join(process.cwd(), "Seguimiento ingresos.xlsx");
   const wb = XLSX.readFile(workbookPath);
@@ -165,7 +322,7 @@ async function main() {
   const axis = await prisma.incomeSource.create({
     data: {
       name: "Axis",
-      billingMode: "project",
+      billingMode: "weekly",
       color: SOURCE_COLORS.Axis,
       defaultFxRate: 1489,
       userId: user.id,
@@ -234,13 +391,33 @@ async function main() {
     }
   }
 
-  // Axis + Otros from Ingresos totales (2026 block)
+  // Axis: una transferencia por semana desde las hojas mensuales (Marzo…Septiembre)
+  let axisPeriods = 0;
+  for (let month = 1; month <= 12; month++) {
+    const weeks = extractAxisWeeklyTransfers(wb, 2026, month);
+    for (const week of weeks) {
+      await prisma.incomePeriod.create({
+        data: {
+          year: week.year,
+          month: week.month,
+          date: week.date,
+          note: `Transferencia semana ${week.week}`,
+          units: 1,
+          unitValue: week.amount,
+          sourceId: axis.id,
+          userId: user.id,
+        },
+      });
+      axisPeriods += 1;
+    }
+  }
+
+  // Otros from Ingresos totales (2026 block)
   const totals = XLSX.utils.sheet_to_json<(string | number | null)[]>(
     wb.Sheets["Ingresos totales"],
     { header: 1, defval: null },
   );
 
-  let axisPeriods = 0;
   let otrosPeriods = 0;
   for (const row of totals) {
     const year = num(row[6]);
@@ -250,37 +427,6 @@ async function main() {
       continue;
     }
 
-    const sessions = num(row[9]) ?? 0;
-    let axisAmount = num(row[10]) ?? 0;
-    // Si el consolidado aún no tiene monto, sumar semanas de la hoja mensual Axis
-    if (axisAmount <= 0 && sessions > 0) {
-      const sheetName = monthName.charAt(0).toUpperCase() + monthName.slice(1);
-      const monthSheet = wb.Sheets[sheetName];
-      if (monthSheet) {
-        const monthRows = XLSX.utils.sheet_to_json<(string | number | null)[]>(monthSheet, {
-          header: 1,
-          defval: null,
-        });
-        axisAmount = monthRows
-          .filter((r) => typeof r[0] === "number" && typeof r[1] === "number" && r[0] >= 1 && r[0] <= 6)
-          .reduce((sum, r) => sum + (num(r[1]) ?? 0), 0);
-      }
-    }
-    if (sessions > 0 || axisAmount > 0) {
-      const unitValue = sessions > 0 ? axisAmount / sessions : 0;
-      await prisma.incomePeriod.create({
-        data: {
-          year,
-          month,
-          units: sessions,
-          unitValue: Math.round(unitValue * 100) / 100,
-          sourceId: axis.id,
-          userId: user.id,
-        },
-      });
-      axisPeriods += 1;
-    }
-
     const concept = str(row[14]);
     const otrosAmount = num(row[15]);
     if (concept && otrosAmount && otrosAmount > 0) {
@@ -288,6 +434,8 @@ async function main() {
         data: {
           year,
           month,
+          date: new Date(Date.UTC(year, month - 1, 15, 12, 0, 0)),
+          note: concept,
           fixedAmount: Math.round(otrosAmount * 100) / 100,
           sourceId: otros.id,
           userId: user.id,

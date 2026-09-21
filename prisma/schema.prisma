@@ -103,6 +103,8 @@ model IncomePeriod {
   id          String             @id @default(cuid())
   year        Int
   month       Int
+  date        DateTime           @default(now())
+  note        String             @default("")
   units       Float?
   unitValue   Float?
   fixedAmount Float?
@@ -113,8 +115,8 @@ model IncomePeriod {
   user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   adjustments IncomeAdjustment[]
 
-  @@unique([userId, sourceId, year, month])
   @@index([userId, year, month])
+  @@index([userId, date])
 }
 
 model IncomeAdjustment {

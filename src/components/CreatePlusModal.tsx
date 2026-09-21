@@ -24,7 +24,7 @@ export function CreatePlusModal({
 }: {
   title: string;
   ariaLabel?: string;
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "lg";
   trigger?: ReactNode;
   children: ReactNode;
 }) {
@@ -58,6 +58,7 @@ export function CreatePlusModal({
     size === "sm"
       ? "flex h-9 w-9 items-center justify-center rounded-full bg-petroleum/90 text-xl font-light leading-none text-white transition hover:bg-petroleum-deep"
       : "flex h-11 w-11 items-center justify-center rounded-full bg-petroleum text-2xl font-light leading-none text-white shadow-[0_12px_28px_rgba(14,74,90,0.28)] transition duration-500 hover:-translate-y-0.5 hover:bg-petroleum-deep";
+  const panelWidth = size === "lg" ? "max-w-2xl" : "max-w-lg";
 
   const modal =
     open && mounted
@@ -69,7 +70,9 @@ export function CreatePlusModal({
               aria-label="Cerrar"
               onClick={close}
             />
-            <div className="glass-panel relative z-10 max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-[28px] p-6 shadow-2xl sm:p-8">
+            <div
+              className={`glass-panel relative z-10 max-h-[90vh] w-full ${panelWidth} overflow-y-auto rounded-[28px] p-6 shadow-2xl sm:p-8`}
+            >
               <div className="mb-6 flex items-start justify-between gap-4">
                 <h2 className="font-display text-3xl text-petroleum">{title}</h2>
                 <button
