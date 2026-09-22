@@ -1,11 +1,18 @@
 import Link from "next/link";
 import { GlassCard } from "@/components/ui";
+import { ensureBnaFxRate } from "@/lib/bna-fx";
 import {
+  collapseTransferPairs,
   computeIncomeTotal,
+  computeLiveHolding,
   isCurrentExpense,
   isInternalMovement,
   isSavingsAccount,
+  isTransferMovement,
+  mondaysInMonth,
   monthLabel,
+  shiftDays,
+  toDateKey,
   transactionDisplayParts,
 } from "@/lib/finance";
 import {
@@ -24,8 +31,14 @@ export default async function DashboardPage() {
   const { year, month } = currentYearMonth();
   const from = startOfMonth();
   const to = endOfMonth();
+  const bnaFx = await ensureBnaFxRate();
+  const prevMonthDate = new Date(year, month - 2, 1);
+  const lookbackMonday = (() => {
+    const mondays = mondaysInMonth(year, month);
+    return mondays[0] ? shiftDays(mondays[0], -7) : from;
+  })();
 
-  const [monthTransactions, recent, incomePeriods, balances, allYearTx] =
+  const [monthTransactions, recent, incomePeriods, balances, prevEnds, weeklySnapshots, allYearTx, accounts] =
     await Promise.all([
       prisma.transaction.findMany({
         where: {
@@ -38,7 +51,7 @@ export default async function DashboardPage() {
         where: { userId: session.userId },
         include: { category: true, account: true, refunds: true },
         orderBy: { date: "desc" },
-        take: 6,
+        take: 12,
       }),
       prisma.incomePeriod.findMany({
         where: { userId: session.userId, year, month },
@@ -47,6 +60,20 @@ export default async function DashboardPage() {
       prisma.accountBalance.findMany({
         where: { userId: session.userId, year, month },
         include: { account: true },
+      }),
+      prisma.accountBalance.findMany({
+        where: {
+          userId: session.userId,
+          year: prevMonthDate.getFullYear(),
+          month: prevMonthDate.getMonth() + 1,
+          kind: "end",
+        },
+      }),
+      prisma.accountWeeklySnapshot.findMany({
+        where: {
+          userId: session.userId,
+          weekDate: { gte: toDateKey(lookbackMonday) },
+        },
       }),
       prisma.transaction.findMany({
         where: {
@@ -58,7 +85,14 @@ export default async function DashboardPage() {
         },
         include: { category: true, refunds: true },
       }),
+      prisma.account.findMany({
+        where: { userId: session.userId },
+      }),
     ]);
+
+  const flowTransactions = monthTransactions.filter(
+    (item) => !isTransferMovement(item.transferKind),
+  );
 
   const professionalIncome = incomePeriods.reduce((sum, period) => {
     return (
@@ -75,25 +109,25 @@ export default async function DashboardPage() {
     );
   }, 0);
 
-  const movementIncome = monthTransactions.reduce((sum, item) => {
+  const movementIncome = flowTransactions.reduce((sum, item) => {
     const parts = transactionDisplayParts(item);
     return sum + (parts.isIncome ? parts.amount : 0);
   }, 0);
-  const currentExpenses = monthTransactions.reduce((sum, item) => {
+  const currentExpenses = flowTransactions.reduce((sum, item) => {
     if (!isCurrentExpense(item.category.type)) {
       return sum;
     }
     const parts = transactionDisplayParts(item);
     return sum + (parts.isIncome ? 0 : parts.amount);
   }, 0);
-  const savingsOut = monthTransactions.reduce((sum, item) => {
+  const savingsOut = flowTransactions.reduce((sum, item) => {
     if (item.category.type !== "savings") {
       return sum;
     }
     const parts = transactionDisplayParts(item);
     return sum + (parts.isIncome ? 0 : parts.amount);
   }, 0);
-  const internalOut = monthTransactions.reduce((sum, item) => {
+  const internalOut = flowTransactions.reduce((sum, item) => {
     if (!isInternalMovement(item.category.type)) {
       return sum;
     }
@@ -106,7 +140,7 @@ export default async function DashboardPage() {
   const savingsRate = honorarios > 0 ? availableFlow / honorarios : 0;
 
   const rankingMap = new Map<string, number>();
-  for (const item of monthTransactions) {
+  for (const item of flowTransactions) {
     if (!isCurrentExpense(item.category.type)) {
       continue;
     }
@@ -131,7 +165,10 @@ export default async function DashboardPage() {
     const monthStart = new Date(y, m - 1, 1);
     const monthEnd = new Date(y, m, 0, 23, 59, 59, 999);
     const txs = allYearTx.filter(
-      (item) => item.date >= monthStart && item.date <= monthEnd,
+      (item) =>
+        item.date >= monthStart &&
+        item.date <= monthEnd &&
+        !isTransferMovement(item.transferKind),
     );
     const expenses = txs.reduce((sum, item) => {
       if (!isCurrentExpense(item.category.type)) {
@@ -158,17 +195,35 @@ export default async function DashboardPage() {
     1,
   );
 
-  const endHoldings = balances.filter((item) => item.kind === "end");
-  const savingsHoldings = endHoldings.filter((item) =>
-    isSavingsAccount(item.account.purpose),
+  const liveHoldings = accounts.map((account) => {
+    const records = balances.filter((item) => item.accountId === account.id);
+    return {
+      account,
+      live: computeLiveHolding({
+        account,
+        start: records.find((item) => item.kind === "start") ?? null,
+        end: records.find((item) => item.kind === "end") ?? null,
+        prevEnd: prevEnds.find((item) => item.accountId === account.id) ?? null,
+        weekly: weeklySnapshots.filter((item) => item.accountId === account.id),
+        transactions: allYearTx.filter((item) => item.accountId === account.id),
+        year,
+        month,
+        fx: bnaFx,
+      }),
+    };
+  });
+  const savingsHoldings = liveHoldings.filter(
+    (item) => item.live && isSavingsAccount(item.account.purpose),
   );
-  const spendingHoldings = endHoldings.filter(
-    (item) => !isSavingsAccount(item.account.purpose),
+  const spendingHoldings = liveHoldings.filter(
+    (item) => item.live && !isSavingsAccount(item.account.purpose),
   );
-  const sumArs = (items: typeof endHoldings) =>
-    items.reduce((sum, item) => sum + item.amountArs, 0);
-  const sumUsd = (items: typeof endHoldings) =>
-    items.reduce((sum, item) => sum + item.amountUsd, 0);
+  const sumArs = (items: typeof liveHoldings) =>
+    items.reduce((sum, item) => sum + (item.live?.amountArs ?? 0), 0);
+  const sumUsd = (items: typeof liveHoldings) =>
+    items.reduce((sum, item) => sum + (item.live?.amountUsd ?? 0), 0);
+
+  const recentVisible = collapseTransferPairs(recent).slice(0, 6);
 
   return (
     <main className="space-y-6">
@@ -312,26 +367,30 @@ export default async function DashboardPage() {
               Ver todos
             </Link>
           </div>
-          {recent.length === 0 ? (
+          {recentVisible.length === 0 ? (
             <p className="text-sm text-muted">Todavía no cargaste nada en este perfil.</p>
           ) : (
             <ul className="space-y-3">
-              {recent.map((item) => {
+              {recentVisible.map((item) => {
+                const transfer = isTransferMovement(item.transferKind);
                 const { isIncome, amount } = transactionDisplayParts(item);
+                const title = transfer
+                  ? item.note.trim() || item.category.name
+                  : item.category.name;
                 return (
                   <li
                     key={item.id}
                     className="flex items-center justify-between gap-4 rounded-2xl bg-white/40 px-4 py-3"
                   >
                     <div>
-                      <p className="font-medium text-ink">{item.category.name}</p>
+                      <p className="font-medium text-ink">{title}</p>
                       <p className="text-sm text-muted">
                         {formatDate(item.date)} · {item.account?.name ?? "Sin cuenta"}
-                        {item.note ? ` · ${item.note}` : ""}
+                        {item.note && !transfer ? ` · ${item.note}` : ""}
                       </p>
                     </div>
                     <p className="font-semibold text-petroleum">
-                      {isIncome ? "+" : "-"}
+                      {transfer ? "" : isIncome ? "+" : "-"}
                       {formatMoney(amount, item.currency as "ARS" | "USD")}
                     </p>
                   </li>

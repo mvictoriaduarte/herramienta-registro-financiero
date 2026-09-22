@@ -7,11 +7,19 @@ import {
   type MovementListItemData,
 } from "@/components/MovementListItem";
 import { GlassCard } from "@/components/ui";
-import { monthLabel, transactionSignedAmount } from "@/lib/finance";
+import { monthLabel, isTransferMovement, transactionSignedAmount } from "@/lib/finance";
 import { formatMoney, toDateInputValue } from "@/lib/format";
 
 type CategoryOption = { id: string; name: string; type: string };
-type AccountOption = { id: string; name: string; currency: string; active?: boolean };
+type AccountOption = {
+  id: string;
+  name: string;
+  currency: string;
+  active?: boolean;
+  isDefault?: boolean;
+  bankName?: string;
+  bankRole?: string;
+};
 
 const WEEKDAYS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
 
@@ -98,10 +106,13 @@ export function MovementsCalendar({
     const counts = new Map<string, number>();
     for (const item of transactions) {
       const key = dayKeyFromIso(item.date);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (isTransferMovement(item.transferKind)) {
+        continue;
+      }
       const signed = transactionSignedAmount(item);
       const ars = toArs(signed, item.currency, item.fxRate, bnaSell);
       nets.set(key, Math.round(((nets.get(key) ?? 0) + ars) * 100) / 100);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     return { netsByDay: nets, countsByDay: counts };
   }, [transactions, bnaSell]);

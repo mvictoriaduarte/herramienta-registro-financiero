@@ -1,4 +1,10 @@
-import type { AccountPurpose, BillingMode, CategoryType } from "@/lib/types";
+import type {
+  AccountBankRole,
+  AccountPurpose,
+  BillingMode,
+  CategoryType,
+  TransferKind,
+} from "@/lib/types";
 
 export function isIncomeCategory(type: string) {
   return type === "income";
@@ -34,6 +40,196 @@ export function inferAccountPurpose(name: string): AccountPurpose {
     return "savings";
   }
   return "spending";
+}
+
+export function inferTracksYield(name: string) {
+  return /superfondo|comitente|plazo fijo|\bfci\b|invers/.test(name.toLowerCase());
+}
+
+export function parseBankRole(value: unknown): AccountBankRole {
+  if (value === "operating" || value === "instrument") {
+    return value;
+  }
+  return "none";
+}
+
+export function parseTransferKind(value: unknown): TransferKind {
+  if (value === "investment" || value === "redemption") {
+    return value;
+  }
+  return "normal";
+}
+
+export function isTransferMovement(kind: string | null | undefined) {
+  return kind === "investment" || kind === "redemption";
+}
+
+export function inferBankName(name: string) {
+  const normalized = name.toLowerCase();
+  if (/santander/.test(normalized)) {
+    return "Santander";
+  }
+  if (/galicia/.test(normalized)) {
+    return "Galicia";
+  }
+  if (/\bbbva\b/.test(normalized)) {
+    return "BBVA";
+  }
+  if (/macro/.test(normalized)) {
+    return "Macro";
+  }
+  if (/naci[oó]n/.test(normalized)) {
+    return "Nación";
+  }
+  if (/mercado\s*pago|\bmp\b/.test(normalized)) {
+    return "Mercado Pago";
+  }
+  return "";
+}
+
+export function inferBankConfig(name: string): {
+  bankName: string;
+  bankRole: AccountBankRole;
+} {
+  const normalized = name.toLowerCase();
+  const inferredName = inferBankName(name);
+  const isInstrument = /superfondo|comitente|plazo fijo|\bfci\b|invers/.test(
+    normalized,
+  );
+  const isOperating = /caja|cuenta corriente|cuenta operativa/.test(normalized);
+
+  if (isInstrument) {
+    return {
+      bankName: inferredName || (/superfondo/.test(normalized) ? "Santander" : ""),
+      bankRole: "instrument",
+    };
+  }
+  if (inferredName && isOperating) {
+    return { bankName: inferredName, bankRole: "operating" };
+  }
+  return { bankName: "", bankRole: "none" };
+}
+
+export function resolvedBank(account: {
+  name: string;
+  bankName?: string | null;
+  bankRole?: string | null;
+}) {
+  const storedName = (account.bankName ?? "").trim();
+  const storedRole = parseBankRole(account.bankRole);
+  if (storedName && storedRole !== "none") {
+    return { bankName: storedName, bankRole: storedRole };
+  }
+  return inferBankConfig(account.name);
+}
+
+export type BankAccountOption = {
+  id: string;
+  name: string;
+  currency: string;
+  bankName?: string | null;
+  bankRole?: string | null;
+};
+
+export function bankTransferGroups(accounts: BankAccountOption[]) {
+  const groups = new Map<
+    string,
+    {
+      bankName: string;
+      operating: BankAccountOption[];
+      instruments: BankAccountOption[];
+    }
+  >();
+
+  for (const account of accounts) {
+    const { bankName, bankRole } = resolvedBank(account);
+    if (!bankName || bankRole === "none") {
+      continue;
+    }
+    const current = groups.get(bankName) ?? {
+      bankName,
+      operating: [],
+      instruments: [],
+    };
+    if (bankRole === "operating") {
+      current.operating.push(account);
+    }
+    if (bankRole === "instrument") {
+      current.instruments.push(account);
+    }
+    groups.set(bankName, current);
+  }
+
+  return [...groups.values()]
+    .filter((group) => group.operating.length > 0 && group.instruments.length > 0)
+    .sort((a, b) => a.bankName.localeCompare(b.bankName, "es"));
+}
+
+export function toDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function parseDateKey(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    return null;
+  }
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+export function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+export function shiftDays(date: Date, days: number) {
+  const next = startOfDay(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+export function mondayOnOrBefore(date = new Date()) {
+  const current = startOfDay(date);
+  const day = current.getDay();
+  const offset = day === 0 ? 6 : day - 1;
+  return shiftDays(current, -offset);
+}
+
+export function mondaysInMonth(
+  year: number,
+  month: number,
+  limit = new Date(),
+) {
+  const start = new Date(year, month - 1, 1);
+  const end = new Date(year, month, 0);
+  const cap = startOfDay(limit);
+  let monday = mondayOnOrBefore(start);
+  if (monday < start) {
+    monday = shiftDays(monday, 7);
+  }
+  const result: Date[] = [];
+  while (monday <= end && monday <= cap) {
+    result.push(new Date(monday));
+    monday = shiftDays(monday, 7);
+  }
+  return result;
+}
+
+export function computeWeeklyYield(input: {
+  previous: number | null;
+  current: number;
+  deposits: number;
+  withdrawals: number;
+}) {
+  if (input.previous == null) {
+    return { expected: null, net: null, percent: null };
+  }
+  const expected = roundMoney(input.previous + input.deposits - input.withdrawals);
+  const net = roundMoney(input.current - expected);
+  const percent = expected === 0 ? null : (net / Math.abs(expected)) * 100;
+  return { expected, net, percent };
 }
 
 export function transactionRefundTotal(
@@ -251,12 +447,174 @@ export function nativeHoldingAmount(item: {
   return item.currency === "USD" ? item.amountUsd : item.amountArs;
 }
 
-export function formatPercent(value: number | null) {
+export function cashFlowInCurrency(
+  tx: {
+    incomeAmount: number;
+    expenseAmount: number;
+    amount?: number;
+    currency: string;
+    fxRate?: number | null;
+    date?: Date;
+    category: { type: string };
+    refunds?: { amount: number }[] | null;
+  },
+  target: "ARS" | "USD",
+  fx: { buy: number; sell: number } | null | undefined,
+) {
+  const parts = transactionDisplayParts(tx);
+  const signed = parts.isIncome ? parts.amount : -parts.amount;
+  const from: "ARS" | "USD" = tx.currency === "USD" ? "USD" : "ARS";
+  if (from === target) {
+    return roundMoney(signed);
+  }
+  if (from === "USD" && target === "ARS") {
+    const rate = tx.fxRate && tx.fxRate > 0 ? tx.fxRate : fx?.buy;
+    if (!rate || rate <= 0) {
+      return 0;
+    }
+    return roundMoney(signed * rate);
+  }
+  const rate = fx?.sell;
+  if (!rate || rate <= 0) {
+    return 0;
+  }
+  return roundMoney(signed / rate);
+}
+
+type LiveHoldingBase = {
+  currency: string;
+  amountArs: number;
+  amountUsd: number;
+};
+
+export function computeLiveHolding(input: {
+  account: { currency: string; tracksYield?: boolean };
+  start: LiveHoldingBase | null;
+  end?: LiveHoldingBase | null;
+  prevEnd?: LiveHoldingBase | null;
+  weekly?: { weekDate: string; currency: string; amountArs: number; amountUsd: number }[];
+  transactions: Parameters<typeof cashFlowInCurrency>[0][];
+  year: number;
+  month: number;
+  now?: Date;
+  fx: { buy: number; sell: number } | null | undefined;
+}): (LiveHoldingBase & { currency: "ARS" | "USD" }) | null {
+  const now = startOfDay(input.now ?? new Date());
+  const monthStart = new Date(input.year, input.month - 1, 1);
+  const sortedWeekly = [...(input.weekly ?? [])]
+    .filter((item) => {
+      const date = parseDateKey(item.weekDate);
+      return date != null && date <= now;
+    })
+    .sort((a, b) => a.weekDate.localeCompare(b.weekDate));
+  const latestWeekly = input.account.tracksYield
+    ? (sortedWeekly.at(-1) ?? null)
+    : null;
+
+  let base: LiveHoldingBase | null = null;
+  let flowFrom = monthStart;
+  let exclusive = false;
+
+  if (latestWeekly) {
+    const week = parseDateKey(latestWeekly.weekDate);
+    base = latestWeekly;
+    if (week) {
+      flowFrom = week;
+      exclusive = true;
+    }
+  } else if (input.start) {
+    base = input.start;
+    flowFrom = monthStart;
+  } else if (input.prevEnd) {
+    base = input.prevEnd;
+    flowFrom = monthStart;
+  } else if (input.end) {
+    base = input.end;
+    return {
+      currency: holdingCurrency(base.currency, input.account.currency),
+      amountArs: base.amountArs,
+      amountUsd: base.amountUsd,
+    };
+  }
+
+  if (!base) {
+    return null;
+  }
+
+  const currency = holdingCurrency(base.currency, input.account.currency);
+  const native = nativeHoldingAmount({ ...base, currency });
+  const flowTo = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const fromKey = toDateKey(flowFrom);
+  const toKey = toDateKey(flowTo);
+  const flows = input.transactions.reduce((sum, tx) => {
+    if (tx.date) {
+      const txKey = toDateKey(tx.date);
+      if (exclusive ? txKey <= fromKey : txKey < fromKey) {
+        return sum;
+      }
+      if (txKey > toKey) {
+        return sum;
+      }
+    }
+    return sum + cashFlowInCurrency(tx, currency, input.fx);
+  }, 0);
+  const liveNative = roundMoney(native + flows);
+  const converted = convertHoldingAmount(liveNative, currency, input.fx);
+  if (converted) {
+    return { currency, ...converted };
+  }
+  return currency === "USD"
+    ? { currency, amountUsd: liveNative, amountArs: 0 }
+    : { currency, amountArs: liveNative, amountUsd: 0 };
+}
+
+export function collapseTransferPairs<
+  T extends {
+    id: string;
+    incomeAmount: number;
+    transferGroupId?: string | null;
+    transferKind?: string | null;
+  },
+>(items: T[]) {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    if (!isTransferMovement(item.transferKind) || !item.transferGroupId) {
+      continue;
+    }
+    const list = groups.get(item.transferGroupId) ?? [];
+    list.push(item);
+    groups.set(item.transferGroupId, list);
+  }
+
+  const skipped = new Set<string>();
+  const result: Array<T & { transferPartner?: T }> = [];
+  for (const item of items) {
+    if (skipped.has(item.id)) {
+      continue;
+    }
+    if (!isTransferMovement(item.transferKind) || !item.transferGroupId) {
+      result.push(item);
+      continue;
+    }
+    const pair = groups.get(item.transferGroupId) ?? [item];
+    const primary =
+      pair.find((entry) => entry.incomeAmount <= 0 && pair.length > 1) ?? pair[0];
+    const partner = pair.find((entry) => entry.id !== primary.id);
+    skipped.add(primary.id);
+    if (partner) {
+      skipped.add(partner.id);
+    }
+    result.push(partner ? { ...primary, transferPartner: partner } : primary);
+  }
+  return result;
+}
+
+export function formatPercent(value: number | null, digits = 1) {
   if (value === null) {
     return "—";
   }
   const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(1)}%`;
+  return `${sign}${value.toFixed(digits)}%`;
 }
 
 export const SOURCE_COLOR_PRESETS = [

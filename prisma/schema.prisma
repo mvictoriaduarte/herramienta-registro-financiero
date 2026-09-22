@@ -20,6 +20,7 @@ model User {
   incomeSources   IncomeSource[]
   incomePeriods   IncomePeriod[]
   accountBalances AccountBalance[]
+  weeklySnapshots AccountWeeklySnapshot[]
 }
 
 model Account {
@@ -27,6 +28,9 @@ model Account {
   name         String
   currency     String           @default("ARS")
   purpose      String           @default("spending")
+  tracksYield  Boolean          @default(false)
+  bankName     String           @default("")
+  bankRole     String           @default("none")
   active       Boolean          @default(true)
   isDefault    Boolean          @default(false)
   userId       String
@@ -34,8 +38,10 @@ model Account {
   user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions Transaction[]
   balances     AccountBalance[]
+  weeklySnapshots AccountWeeklySnapshot[]
 
   @@unique([userId, name])
+  @@index([userId, bankName])
 }
 
 model Category {
@@ -53,24 +59,27 @@ model Category {
 }
 
 model Transaction {
-  id            String              @id @default(cuid())
-  incomeAmount  Float               @default(0)
-  expenseAmount Float               @default(0)
-  amount        Float               @default(0)
-  date          DateTime
-  note          String              @default("")
-  currency      String              @default("ARS")
-  fxRate        Float?
-  userId        String
-  categoryId    String
-  accountId     String?
-  createdAt     DateTime            @default(now())
-  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category      Category            @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  account       Account?            @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  refunds       TransactionRefund[]
+  id              String              @id @default(cuid())
+  incomeAmount    Float               @default(0)
+  expenseAmount   Float               @default(0)
+  amount          Float               @default(0)
+  date            DateTime
+  note            String              @default("")
+  currency        String              @default("ARS")
+  fxRate          Float?
+  transferGroupId String              @default("")
+  transferKind    String              @default("normal")
+  userId          String
+  categoryId      String
+  accountId       String?
+  createdAt       DateTime            @default(now())
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category        Category            @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  account         Account?            @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  refunds         TransactionRefund[]
 
   @@index([userId, date])
+  @@index([userId, transferGroupId])
 }
 
 model TransactionRefund {
@@ -144,6 +153,22 @@ model AccountBalance {
 
   @@unique([userId, accountId, year, month, kind])
   @@index([userId, year, month])
+}
+
+model AccountWeeklySnapshot {
+  id        String   @id @default(cuid())
+  weekDate  String
+  currency  String   @default("ARS")
+  amountArs Float    @default(0)
+  amountUsd Float    @default(0)
+  accountId String
+  userId    String
+  createdAt DateTime @default(now())
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, accountId, weekDate])
+  @@index([userId, weekDate])
 }
 
 model FxRate {

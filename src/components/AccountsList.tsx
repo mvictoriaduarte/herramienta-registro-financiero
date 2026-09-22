@@ -5,23 +5,34 @@ import { IconPencil } from "@/components/ActionIcons";
 import { EditAccountForm } from "@/components/AccountForm";
 import { CreatePlusModal } from "@/components/CreatePlusModal";
 import { DeleteButton } from "@/components/DeleteButton";
-import { parseAccountPurpose } from "@/lib/finance";
-import { ACCOUNT_PURPOSE_LABELS } from "@/lib/types";
+import { parseAccountPurpose, parseBankRole, resolvedBank } from "@/lib/finance";
+import { ACCOUNT_BANK_ROLE_LABELS, ACCOUNT_PURPOSE_LABELS } from "@/lib/types";
 
 type AccountRow = {
   id: string;
   name: string;
   currency: string;
   purpose: string;
+  tracksYield: boolean;
+  bankName: string;
+  bankRole: string;
   isDefault: boolean;
   transactions: number;
 };
 
-export function AccountsList({ accounts }: { accounts: AccountRow[] }) {
+export function AccountsList({
+  accounts,
+  knownBanks = [],
+}: {
+  accounts: AccountRow[];
+  knownBanks?: string[];
+}) {
   return (
     <ul className="space-y-3">
       {accounts.map((account) => {
         const purpose = parseAccountPurpose(account.purpose);
+        const bank = resolvedBank(account);
+        const bankRole = parseBankRole(bank.bankRole);
         return (
           <li
             key={account.id}
@@ -30,7 +41,11 @@ export function AccountsList({ accounts }: { accounts: AccountRow[] }) {
             <div>
               <p className="font-medium">{account.name}</p>
               <p className="text-sm text-muted">
-                {ACCOUNT_PURPOSE_LABELS[purpose]} · {account.currency} ·{" "}
+                {ACCOUNT_PURPOSE_LABELS[purpose]}
+                {bank.bankName && bankRole !== "none"
+                  ? ` · ${bank.bankName} · ${ACCOUNT_BANK_ROLE_LABELS[bankRole]}`
+                  : ""}
+                {account.tracksYield ? " · Rendimiento semanal" : ""} · {account.currency} ·{" "}
                 {account.transactions} movimientos
               </p>
             </div>
@@ -41,11 +56,15 @@ export function AccountsList({ accounts }: { accounts: AccountRow[] }) {
                 trigger={<IconPencil />}
               >
                 <EditAccountForm
+                  knownBanks={knownBanks}
                   account={{
                     id: account.id,
                     name: account.name,
                     currency: account.currency,
                     purpose,
+                    tracksYield: account.tracksYield,
+                    bankName: bank.bankName,
+                    bankRole,
                     isDefault: account.isDefault,
                   }}
                 />

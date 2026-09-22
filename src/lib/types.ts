@@ -13,9 +13,23 @@ export type BalanceKind = "start" | "end";
 
 export type AccountPurpose = "spending" | "savings";
 
+export type AccountBankRole = "none" | "operating" | "instrument";
+
+export type TransferKind = "normal" | "investment" | "redemption";
+
 export const ACCOUNT_PURPOSE_LABELS: Record<AccountPurpose, string> = {
   spending: "Gastos corrientes / corto plazo",
   savings: "Ahorro / inversión",
+};
+
+export const ACCOUNT_BANK_ROLE_LABELS: Record<Exclude<AccountBankRole, "none">, string> = {
+  operating: "Caja / cuenta operativa",
+  instrument: "Instrumento de inversión",
+};
+
+export const TRANSFER_KIND_LABELS: Record<Exclude<TransferKind, "normal">, string> = {
+  investment: "Inversión",
+  redemption: "Rescate",
 };
 
 export const CATEGORY_TYPE_LABELS: Record<CategoryType, string> = {

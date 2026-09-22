@@ -3,7 +3,8 @@ import { CreatePlusModal } from "@/components/CreatePlusModal";
 import { HoldingAccountRow } from "@/components/HoldingAccountRow";
 import { GlassCard } from "@/components/ui";
 import { ensureBnaFxRate } from "@/lib/bna-fx";
-import { currentYearMonth, formatMoney } from "@/lib/format";
+import { computeLiveHolding, mondaysInMonth, shiftDays, toDateKey } from "@/lib/finance";
+import { currentYearMonth, formatMoney, startOfMonth } from "@/lib/format";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 
@@ -11,42 +12,74 @@ export default async function HoldingsPage() {
   const session = await requireUser();
   const now = currentYearMonth();
   const bnaFx = await ensureBnaFxRate();
+  const prevMonth = now.month === 1 ? 12 : now.month - 1;
+  const prevYear = now.month === 1 ? now.year - 1 : now.year;
+  const mondays = mondaysInMonth(now.year, now.month);
+  const lookback = mondays[0] ? shiftDays(mondays[0], -7) : startOfMonth();
 
-  const [accounts, monthBalances] = await Promise.all([
-    prisma.account.findMany({
-      where: { userId: session.userId },
-      orderBy: { name: "asc" },
-    }),
-    prisma.accountBalance.findMany({
-      where: {
-        userId: session.userId,
-        year: now.year,
-        month: now.month,
-      },
-    }),
-  ]);
+  const [accounts, monthBalances, prevEnds, weeklySnapshots, transactions] =
+    await Promise.all([
+      prisma.account.findMany({
+        where: { userId: session.userId },
+        orderBy: { name: "asc" },
+      }),
+      prisma.accountBalance.findMany({
+        where: {
+          userId: session.userId,
+          year: now.year,
+          month: now.month,
+        },
+      }),
+      prisma.accountBalance.findMany({
+        where: {
+          userId: session.userId,
+          year: prevYear,
+          month: prevMonth,
+          kind: "end",
+        },
+      }),
+      prisma.accountWeeklySnapshot.findMany({
+        where: {
+          userId: session.userId,
+          weekDate: { gte: toDateKey(lookback) },
+        },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          userId: session.userId,
+          date: { gte: lookback },
+        },
+        include: { category: true, refunds: true },
+      }),
+    ]);
 
   const startArs = monthBalances
     .filter((item) => item.kind === "start")
     .reduce((sum, item) => sum + item.amountArs, 0);
-  const endArs = monthBalances
-    .filter((item) => item.kind === "end")
-    .reduce((sum, item) => sum + item.amountArs, 0);
   const startUsd = monthBalances
     .filter((item) => item.kind === "start")
-    .reduce((sum, item) => sum + item.amountUsd, 0);
-  const endUsd = monthBalances
-    .filter((item) => item.kind === "end")
     .reduce((sum, item) => sum + item.amountUsd, 0);
 
   const rows = accounts.map((account) => {
     const records = monthBalances.filter((item) => item.accountId === account.id);
-    const current =
-      records.find((item) => item.kind === "end") ??
-      records.find((item) => item.kind === "start") ??
-      null;
-    return { account, current };
+    const start = records.find((item) => item.kind === "start") ?? null;
+    const end = records.find((item) => item.kind === "end") ?? null;
+    const live = computeLiveHolding({
+      account,
+      start,
+      end,
+      prevEnd: prevEnds.find((item) => item.accountId === account.id) ?? null,
+      weekly: weeklySnapshots.filter((item) => item.accountId === account.id),
+      transactions: transactions.filter((item) => item.accountId === account.id),
+      year: now.year,
+      month: now.month,
+      fx: bnaFx,
+    });
+    return { account, current: live };
   });
+
+  const liveArs = rows.reduce((sum, row) => sum + (row.current?.amountArs ?? 0), 0);
+  const liveUsd = rows.reduce((sum, row) => sum + (row.current?.amountUsd ?? 0), 0);
 
   return (
     <main className="space-y-6">
@@ -79,11 +112,11 @@ export default async function HoldingsPage() {
           <p className="mt-2 text-sm text-muted">USD {formatMoney(startUsd, "USD")}</p>
         </GlassCard>
         <GlassCard className="animate-in delay-2">
-          <p className="text-sm text-muted">Fin del mes (ARS)</p>
-          <p className="mt-3 font-display text-3xl text-petroleum">{formatMoney(endArs)}</p>
+          <p className="text-sm text-muted">Actual (ARS)</p>
+          <p className="mt-3 font-display text-3xl text-petroleum">{formatMoney(liveArs)}</p>
           <p className="mt-2 text-sm text-muted">
-            Diferencia ARS {formatMoney(endArs - startArs)} · USD{" "}
-            {formatMoney(endUsd - startUsd, "USD")}
+            Diferencia ARS {formatMoney(liveArs - startArs)} · USD{" "}
+            {formatMoney(liveUsd - startUsd, "USD")}
           </p>
         </GlassCard>
       </div>

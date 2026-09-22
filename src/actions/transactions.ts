@@ -3,10 +3,13 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { ensureBnaFxRate } from "@/lib/bna-fx";
+import { parseTransferKind, resolvedBank } from "@/lib/finance";
 import { parseAmount } from "@/lib/format";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import type { ActionState } from "@/lib/types";
+
+const TRANSFER_CATEGORY_NAME = "Inversión / rescate";
 
 function amountField(label: string) {
   return z.string().transform((value, ctx) => {
@@ -66,6 +69,99 @@ function parseTransactionForm(formData: FormData) {
   });
 }
 
+const transferSchema = z
+  .object({
+    amount: amountField("Monto"),
+    transferKind: z.enum(["investment", "redemption"], {
+      message: "Elegí si es inversión o rescate.",
+    }),
+    operatingAccountId: z.string().min(1, "Elegí la caja operativa."),
+    instrumentAccountId: z.string().min(1, "Elegí el instrumento."),
+    date: z.string().min(1, "Elegí una fecha."),
+    note: z.string().trim().max(200, "La descripción es demasiado larga.").optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.amount <= 0) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Ingresá un monto mayor a cero.",
+      });
+    }
+    if (data.operatingAccountId === data.instrumentAccountId) {
+      ctx.addIssue({
+        code: "custom",
+        message: "La caja y el instrumento tienen que ser cuentas distintas.",
+      });
+    }
+  });
+
+function parseTransferForm(formData: FormData) {
+  return transferSchema.safeParse({
+    amount: formData.get("amount") ?? "",
+    transferKind: formData.get("transferKind") ?? "",
+    operatingAccountId: formData.get("operatingAccountId"),
+    instrumentAccountId: formData.get("instrumentAccountId"),
+    date: formData.get("date"),
+    note: formData.get("note") ?? "",
+  });
+}
+
+function revalidateFinance() {
+  revalidatePath("/movimientos");
+  revalidatePath("/dashboard");
+  revalidatePath("/tenencias", "layout");
+}
+
+async function ensureTransferCategory(userId: string) {
+  const existing = await prisma.category.findFirst({
+    where: { userId, name: TRANSFER_CATEGORY_NAME, type: "savings" },
+  });
+  if (existing) {
+    return existing;
+  }
+  return prisma.category.create({
+    data: {
+      name: TRANSFER_CATEGORY_NAME,
+      type: "savings",
+      group: "Ahorro/Inversión",
+      recurrence: "eventual",
+      userId,
+    },
+  });
+}
+
+async function loadTransferAccounts(
+  userId: string,
+  operatingAccountId: string,
+  instrumentAccountId: string,
+) {
+  const [operating, instrument] = await Promise.all([
+    prisma.account.findFirst({
+      where: { id: operatingAccountId, userId, active: true },
+    }),
+    prisma.account.findFirst({
+      where: { id: instrumentAccountId, userId, active: true },
+    }),
+  ]);
+  if (!operating || !instrument) {
+    return { error: "Esa cuenta no existe o está inactiva." as const };
+  }
+  const operatingBank = resolvedBank(operating);
+  const instrumentBank = resolvedBank(instrument);
+  if (
+    operatingBank.bankRole !== "operating" ||
+    instrumentBank.bankRole !== "instrument" ||
+    !operatingBank.bankName ||
+    operatingBank.bankName !== instrumentBank.bankName
+  ) {
+    return {
+      error:
+        "La inversión y el rescate van entre la caja y un instrumento del mismo banco." as const,
+    };
+  }
+  return { operating, instrument, bankName: operatingBank.bankName };
+}
+
 async function resolveFxRate(currency: "ARS" | "USD") {
   if (currency !== "USD") {
     return null;
@@ -79,6 +175,9 @@ export async function createTransactionAction(
   formData: FormData,
 ): Promise<ActionState> {
   const session = await requireUser();
+  if (String(formData.get("entryKind") ?? "cash") === "transfer") {
+    return createBankTransfer(session.userId, formData);
+  }
   const parsed = parseTransactionForm(formData);
 
   if (!parsed.success) {
@@ -127,10 +226,194 @@ export async function createTransactionAction(
     },
   });
 
-  revalidatePath("/movimientos");
-  revalidatePath("/dashboard");
-  revalidatePath("/tenencias");
+  revalidateFinance();
   return { success: "Movimiento guardado." };
+}
+
+async function createBankTransfer(userId: string, formData: FormData): Promise<ActionState> {
+  const parsed = parseTransferForm(formData);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
+  }
+
+  const accounts = await loadTransferAccounts(
+    userId,
+    parsed.data.operatingAccountId,
+    parsed.data.instrumentAccountId,
+  );
+  if ("error" in accounts) {
+    return { error: accounts.error };
+  }
+
+  const date = new Date(`${parsed.data.date}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return { error: "La fecha no es válida." };
+  }
+
+  const category = await ensureTransferCategory(userId);
+  const groupId = crypto.randomUUID();
+  const kind = parsed.data.transferKind;
+  const note = parsed.data.note ?? "";
+  const amount = parsed.data.amount;
+  const debitId =
+    kind === "investment" ? accounts.operating.id : accounts.instrument.id;
+  const creditId =
+    kind === "investment" ? accounts.instrument.id : accounts.operating.id;
+  const label = kind === "investment" ? "Inversión" : "Rescate";
+
+  await prisma.$transaction([
+    prisma.transaction.create({
+      data: {
+        incomeAmount: 0,
+        expenseAmount: amount,
+        amount,
+        date,
+        note: note || `${label} ${accounts.bankName}`,
+        currency: "ARS",
+        fxRate: null,
+        transferGroupId: groupId,
+        transferKind: kind,
+        categoryId: category.id,
+        accountId: debitId,
+        userId,
+      },
+    }),
+    prisma.transaction.create({
+      data: {
+        incomeAmount: amount,
+        expenseAmount: 0,
+        amount,
+        date,
+        note: note || `${label} ${accounts.bankName}`,
+        currency: "ARS",
+        fxRate: null,
+        transferGroupId: groupId,
+        transferKind: kind,
+        categoryId: category.id,
+        accountId: creditId,
+        userId,
+      },
+    }),
+  ]);
+
+  revalidateFinance();
+  return {
+    success:
+      kind === "investment" ? "Inversión registrada." : "Rescate registrado.",
+  };
+}
+
+async function updateBankTransfer(
+  userId: string,
+  current: { id: string; transferGroupId: string; refunds: { amount: number }[] },
+  formData: FormData,
+): Promise<ActionState> {
+  if (current.refunds.length > 0) {
+    return { error: "No se puede editar una inversión/rescate con devoluciones." };
+  }
+
+  const parsed = parseTransferForm(formData);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
+  }
+
+  const accounts = await loadTransferAccounts(
+    userId,
+    parsed.data.operatingAccountId,
+    parsed.data.instrumentAccountId,
+  );
+  if ("error" in accounts) {
+    return { error: accounts.error };
+  }
+
+  const date = new Date(`${parsed.data.date}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return { error: "La fecha no es válida." };
+  }
+
+  const groupId = current.transferGroupId;
+  if (!groupId) {
+    return { error: "No se encontró el movimiento vinculado." };
+  }
+
+  const legs = await prisma.transaction.findMany({
+    where: { userId, transferGroupId: groupId },
+    include: { refunds: true },
+  });
+  if (legs.some((item) => item.refunds.length > 0)) {
+    return { error: "No se puede editar una inversión/rescate con devoluciones." };
+  }
+
+  const category = await ensureTransferCategory(userId);
+  const kind = parsed.data.transferKind;
+  const note = parsed.data.note ?? "";
+  const amount = parsed.data.amount;
+  const debitId =
+    kind === "investment" ? accounts.operating.id : accounts.instrument.id;
+  const creditId =
+    kind === "investment" ? accounts.instrument.id : accounts.operating.id;
+  const label = kind === "investment" ? "Inversión" : "Rescate";
+  const debit = legs.find((item) => item.expenseAmount > 0) ?? legs[0];
+  const credit = legs.find((item) => item.id !== debit?.id) ?? null;
+
+  if (!debit) {
+    return { error: "No se encontró el movimiento vinculado." };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.transaction.update({
+      where: { id: debit.id },
+      data: {
+        incomeAmount: 0,
+        expenseAmount: amount,
+        amount,
+        date,
+        note: note || `${label} ${accounts.bankName}`,
+        currency: "ARS",
+        fxRate: null,
+        transferKind: kind,
+        categoryId: category.id,
+        accountId: debitId,
+      },
+    });
+    if (credit) {
+      await tx.transaction.update({
+        where: { id: credit.id },
+        data: {
+          incomeAmount: amount,
+          expenseAmount: 0,
+          amount,
+          date,
+          note: note || `${label} ${accounts.bankName}`,
+          currency: "ARS",
+          fxRate: null,
+          transferKind: kind,
+          categoryId: category.id,
+          accountId: creditId,
+        },
+      });
+    } else {
+      await tx.transaction.create({
+        data: {
+          incomeAmount: amount,
+          expenseAmount: 0,
+          amount,
+          date,
+          note: note || `${label} ${accounts.bankName}`,
+          currency: "ARS",
+          fxRate: null,
+          transferGroupId: groupId,
+          transferKind: kind,
+          categoryId: category.id,
+          accountId: creditId,
+          userId,
+        },
+      });
+    }
+  });
+
+  revalidateFinance();
+  return { success: "Movimiento actualizado." };
 }
 
 export async function updateTransactionAction(
@@ -139,20 +422,29 @@ export async function updateTransactionAction(
 ): Promise<ActionState> {
   const session = await requireUser();
   const id = String(formData.get("id") ?? "");
+  const existing = await prisma.transaction.findFirst({
+    where: { id, userId: session.userId },
+    include: { refunds: true },
+  });
+
+  if (!existing) {
+    return { error: "Movimiento no encontrado." };
+  }
+
+  if (
+    String(formData.get("entryKind") ?? "") === "transfer" ||
+    parseTransferKind(existing.transferKind) !== "normal"
+  ) {
+    return updateBankTransfer(session.userId, existing, formData);
+  }
+
   const parsed = parseTransactionForm(formData);
 
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
   }
 
-  const transaction = await prisma.transaction.findFirst({
-    where: { id, userId: session.userId },
-    include: { refunds: true },
-  });
-
-  if (!transaction) {
-    return { error: "Movimiento no encontrado." };
-  }
+  const transaction = existing;
 
   const [category, account] = await Promise.all([
     prisma.category.findFirst({
@@ -206,9 +498,7 @@ export async function updateTransactionAction(
     },
   });
 
-  revalidatePath("/movimientos");
-  revalidatePath("/dashboard");
-  revalidatePath("/tenencias");
+  revalidateFinance();
   return { success: "Movimiento actualizado." };
 }
 
@@ -224,13 +514,20 @@ export async function deleteTransactionAction(formData: FormData) {
     return;
   }
 
-  await prisma.transaction.delete({
-    where: { id: transaction.id },
-  });
+  if (transaction.transferGroupId) {
+    await prisma.transaction.deleteMany({
+      where: {
+        userId: session.userId,
+        transferGroupId: transaction.transferGroupId,
+      },
+    });
+  } else {
+    await prisma.transaction.delete({
+      where: { id: transaction.id },
+    });
+  }
 
-  revalidatePath("/movimientos");
-  revalidatePath("/dashboard");
-  revalidatePath("/tenencias");
+  revalidateFinance();
 }
 
 export async function addTransactionRefundAction(
@@ -284,9 +581,7 @@ export async function addTransactionRefundAction(
     },
   });
 
-  revalidatePath("/movimientos");
-  revalidatePath("/dashboard");
-  revalidatePath("/tenencias");
+  revalidateFinance();
   return { success: "Devolución registrada." };
 }
 
@@ -349,9 +644,7 @@ export async function updateTransactionRefundAction(
     },
   });
 
-  revalidatePath("/movimientos");
-  revalidatePath("/dashboard");
-  revalidatePath("/tenencias");
+  revalidateFinance();
   return { success: "Devolución actualizada." };
 }
 
@@ -370,7 +663,5 @@ export async function deleteTransactionRefundAction(formData: FormData) {
 
   await prisma.transactionRefund.delete({ where: { id: refund.id } });
 
-  revalidatePath("/movimientos");
-  revalidatePath("/dashboard");
-  revalidatePath("/tenencias");
+  revalidateFinance();
 }

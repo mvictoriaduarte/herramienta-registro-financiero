@@ -9,8 +9,9 @@ import {
   deleteTransactionAction,
   deleteTransactionRefundAction,
 } from "@/actions/transactions";
-import { categoryTypeLabel, transactionDisplayParts } from "@/lib/finance";
+import { categoryTypeLabel, isTransferMovement, transactionDisplayParts } from "@/lib/finance";
 import { formatDate, formatMoney } from "@/lib/format";
+import { TRANSFER_KIND_LABELS } from "@/lib/types";
 
 export type MovementListItemData = {
   id: string;
@@ -23,6 +24,17 @@ export type MovementListItemData = {
   fxRate: number | null;
   categoryId: string;
   accountId: string | null;
+  transferKind?: string;
+  transferGroupId?: string;
+  operatingAccountId?: string;
+  instrumentAccountId?: string;
+  transferPartner?: {
+    id: string;
+    accountId: string | null;
+    accountName: string;
+    incomeAmount: number;
+    expenseAmount: number;
+  } | null;
   category: { id: string; name: string; type: string; group: string };
   account: { name: string } | null;
   refunds: {
@@ -34,7 +46,15 @@ export type MovementListItemData = {
 };
 
 type CategoryOption = { id: string; name: string; type: string };
-type AccountOption = { id: string; name: string; currency: string; active?: boolean; isDefault?: boolean };
+type AccountOption = {
+  id: string;
+  name: string;
+  currency: string;
+  active?: boolean;
+  isDefault?: boolean;
+  bankName?: string;
+  bankRole?: string;
+};
 
 export function MovementListItem({
   item,
@@ -48,20 +68,35 @@ export function MovementListItem({
 }) {
   const { isIncome, amount, gross, refunded } = transactionDisplayParts(item);
   const remaining = Math.round((gross - refunded) * 100) / 100;
-  const canRefund = !isIncome && item.expenseAmount > 0 && remaining > 0;
+  const isTransfer = isTransferMovement(item.transferKind);
+  const canRefund = !isTransfer && !isIncome && item.expenseAmount > 0 && remaining > 0;
+  const transferKind =
+    item.transferKind === "redemption" ? "redemption" : "investment";
+  const fromName =
+    item.expenseAmount > 0
+      ? item.account?.name
+      : item.transferPartner?.accountName;
+  const toName =
+    item.incomeAmount > 0
+      ? item.account?.name
+      : item.transferPartner?.accountName;
 
   return (
     <li className="space-y-3 rounded-2xl bg-white/40 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="font-medium">
-            {item.note.trim() || item.category.name}
+            {isTransfer
+              ? item.note.trim() || TRANSFER_KIND_LABELS[transferKind]
+              : item.note.trim() || item.category.name}
           </p>
           <p className="text-sm text-muted">
-            {formatDate(item.date)} · {item.account?.name ?? "Sin cuenta"} ·{" "}
-            {item.category.name}
-            {item.category.group ? ` · ${item.category.group}` : ""} ·{" "}
-            {categoryTypeLabel(item.category.type)}
+            {formatDate(item.date)} ·{" "}
+            {isTransfer
+              ? `${fromName ?? "Cuenta"} → ${toName ?? "Cuenta"} · ${TRANSFER_KIND_LABELS[transferKind]}`
+              : `${item.account?.name ?? "Sin cuenta"} · ${item.category.name}${
+                  item.category.group ? ` · ${item.category.group}` : ""
+                } · ${categoryTypeLabel(item.category.type)}`}
           </p>
           {!isIncome && refunded > 0 ? (
             <p className="mt-1 text-sm text-petroleum-soft">
@@ -73,10 +108,14 @@ export function MovementListItem({
         <div className="flex items-center gap-1.5">
           <p
             className={`mr-2 font-semibold ${
-              isIncome ? "text-emerald-700" : "text-rose-700"
+              isTransfer
+                ? "text-petroleum"
+                : isIncome
+                  ? "text-emerald-700"
+                  : "text-rose-700"
             }`}
           >
-            {isIncome ? "+" : "-"}
+            {isTransfer ? "" : isIncome ? "+" : "-"}
             {formatMoney(amount, item.currency as "ARS" | "USD")}
           </p>
           {canRefund ? (
@@ -108,6 +147,10 @@ export function MovementListItem({
                 fxRate: item.fxRate,
                 categoryId: item.categoryId,
                 accountId: item.accountId,
+                transferKind: item.transferKind,
+                transferGroupId: item.transferGroupId,
+                operatingAccountId: item.operatingAccountId,
+                instrumentAccountId: item.instrumentAccountId,
               }}
               categories={categories}
               accounts={accounts}

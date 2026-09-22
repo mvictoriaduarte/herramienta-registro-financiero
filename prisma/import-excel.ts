@@ -45,7 +45,59 @@ const NEUTRAL_CONCEPTS = new Set([
 
 function excelDate(serial: number) {
   const utc = Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000;
-  return new Date(utc);
+  const date = new Date(utc);
+  return new Date(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 12, 0, 0, 0);
+}
+
+function excelDateKey(serial: number) {
+  const utc = Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000;
+  const date = new Date(utc);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
+function extractWeeklyReals(
+  rows: (string | number | null)[][],
+  titleTest: (label: string) => boolean,
+  realLabelTest: (label: string) => boolean,
+) {
+  const found: { weekDate: string; amountArs: number }[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (!titleTest(str(rows[i]?.[8]))) {
+      continue;
+    }
+    let dateRow: (string | number | null)[] | null = null;
+    let realRow: (string | number | null)[] | null = null;
+    for (let j = i; j <= i + 6 && j < rows.length; j++) {
+      const label = str(rows[j]?.[8]);
+      const hasSerial = [9, 10, 11, 12, 13].some((c) => {
+        const v = num(rows[j]?.[c]);
+        return v != null && v > 40000 && v < 50000;
+      });
+      if (hasSerial && !dateRow) {
+        dateRow = rows[j];
+      }
+      if (realLabelTest(label)) {
+        realRow = rows[j];
+        break;
+      }
+    }
+    if (!dateRow || !realRow) {
+      continue;
+    }
+    for (let c = 9; c <= 14; c++) {
+      const serial = num(dateRow[c]);
+      const amount = num(realRow[c]);
+      if (serial == null || amount == null || amount <= 0) {
+        continue;
+      }
+      found.push({
+        weekDate: excelDateKey(serial),
+        amountArs: Math.round(amount * 100) / 100,
+      });
+    }
+    break;
+  }
+  return found;
 }
 
 function num(value: unknown): number | null {
@@ -90,6 +142,10 @@ function accountPurpose(name: string): "spending" | "savings" {
     return "savings";
   }
   return "spending";
+}
+
+function accountTracksYield(name: string) {
+  return /superfondo|comitente|plazo fijo|\bfci\b|invers/.test(name.toLowerCase());
 }
 
 const MONTH_SHEET_NAMES: Record<number, string> = {
@@ -296,6 +352,7 @@ async function main() {
         name,
         currency: accountCurrency(name),
         purpose: accountPurpose(name),
+        tracksYield: accountTracksYield(name),
         userId: user.id,
       },
     });
@@ -597,6 +654,61 @@ async function main() {
     }
   }
 
+  let weeklyCount = 0;
+  const weeklyAccounts = [
+    {
+      names: ["Superfondos Santander"],
+      title: (label: string) => /superfondo/i.test(label),
+      real: (label: string) => /^real$/i.test(label),
+    },
+    {
+      names: ["Cta. Comitente Petrini"],
+      title: (label: string) => /^petrini$/i.test(label),
+      real: (label: string) => /tenencia real/i.test(label),
+    },
+  ];
+  const weekMap = new Map<string, Map<string, number>>();
+  for (const { sheet } of monthSheets) {
+    const rows = XLSX.utils.sheet_to_json<(string | number | null)[]>(
+      wb.Sheets[sheet],
+      { header: 1, defval: null },
+    );
+    for (const target of weeklyAccounts) {
+      const accountId = target.names
+        .map((name) => accountsByName.get(name))
+        .find(Boolean);
+      if (!accountId) {
+        continue;
+      }
+      const bucket = weekMap.get(accountId) ?? new Map<string, number>();
+      for (const item of extractWeeklyReals(rows, target.title, target.real)) {
+        bucket.set(item.weekDate, item.amountArs);
+      }
+      weekMap.set(accountId, bucket);
+    }
+  }
+  for (const [accountId, weeks] of weekMap) {
+    const julyStart = await prisma.accountBalance.findFirst({
+      where: { accountId, userId: user.id, year: 2026, month: 7, kind: "start" },
+    });
+    if (julyStart && julyStart.amountArs > 0 && !weeks.has("2026-06-29")) {
+      weeks.set("2026-06-29", Math.round(julyStart.amountArs * 100) / 100);
+    }
+    for (const [weekDate, amountArs] of weeks) {
+      await prisma.accountWeeklySnapshot.create({
+        data: {
+          weekDate,
+          currency: "ARS",
+          amountArs,
+          amountUsd: 0,
+          accountId,
+          userId: user.id,
+        },
+      });
+      weeklyCount += 1;
+    }
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -608,6 +720,7 @@ async function main() {
         otrosPeriods,
         transactions: txCount,
         balances: balanceCount,
+        weeklySnapshots: weeklyCount,
       },
       null,
       2,

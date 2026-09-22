@@ -13,7 +13,15 @@ import { formatPercent } from "@/lib/finance";
 import { formatMoney } from "@/lib/format";
 
 type CategoryOption = { id: string; name: string; type: string };
-type AccountOption = { id: string; name: string; currency: string; active?: boolean; isDefault?: boolean };
+type AccountOption = {
+  id: string;
+  name: string;
+  currency: string;
+  active?: boolean;
+  isDefault?: boolean;
+  bankName?: string;
+  bankRole?: string;
+};
 
 type ConsolidatedProps = {
   monthTotal: number;

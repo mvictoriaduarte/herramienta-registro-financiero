@@ -2,7 +2,9 @@ import { Suspense } from "react";
 import { MovementsHub } from "@/components/MovementsHub";
 import { ensureBnaFxRate } from "@/lib/bna-fx";
 import {
+  collapseTransferPairs,
   isCurrentExpense,
+  isTransferMovement,
   monthKey,
   monthLabel,
   percentChange,
@@ -62,7 +64,10 @@ export default async function TransactionsPage() {
   ]);
 
   const expenseTx = transactions
-    .filter((item) => isCurrentExpense(item.category.type))
+    .filter(
+      (item) =>
+        isCurrentExpense(item.category.type) && !isTransferMovement(item.transferKind),
+    )
     .map((item) => {
       const parts = transactionDisplayParts(item);
       const group = expenseGroupName(item.category);
@@ -155,31 +160,65 @@ export default async function TransactionsPage() {
     return { key, label, year, month, cells, rowTotal };
   });
 
-  const movementItems = transactions.map((item) => ({
-    id: item.id,
-    incomeAmount: item.incomeAmount,
-    expenseAmount: item.expenseAmount,
-    amount: item.amount,
-    date: item.date.toISOString(),
-    note: item.note,
-    currency: item.currency,
-    fxRate: item.fxRate,
-    categoryId: item.categoryId,
-    accountId: item.accountId,
-    category: {
-      id: item.category.id,
-      name: item.category.name,
-      type: item.category.type,
-      group: item.category.group,
-    },
-    account: item.account ? { name: item.account.name } : null,
-    refunds: item.refunds.map((refund) => ({
-      id: refund.id,
-      amount: refund.amount,
-      note: refund.note,
-      date: refund.date ? refund.date.toISOString() : null,
+  const movementItems = collapseTransferPairs(
+    transactions.map((item) => ({
+      id: item.id,
+      incomeAmount: item.incomeAmount,
+      expenseAmount: item.expenseAmount,
+      amount: item.amount,
+      date: item.date.toISOString(),
+      note: item.note,
+      currency: item.currency,
+      fxRate: item.fxRate,
+      categoryId: item.categoryId,
+      accountId: item.accountId,
+      transferKind: item.transferKind,
+      transferGroupId: item.transferGroupId,
+      category: {
+        id: item.category.id,
+        name: item.category.name,
+        type: item.category.type,
+        group: item.category.group,
+      },
+      account: item.account ? { name: item.account.name } : null,
+      refunds: item.refunds.map((refund) => ({
+        id: refund.id,
+        amount: refund.amount,
+        note: refund.note,
+        date: refund.date ? refund.date.toISOString() : null,
+      })),
+      transferPartner: undefined as
+        | {
+            id: string;
+            accountId: string | null;
+            accountName: string;
+            incomeAmount: number;
+            expenseAmount: number;
+          }
+        | undefined,
     })),
-  }));
+  ).map((item) => {
+    const partner = item.transferPartner;
+    const debitAccountId =
+      item.expenseAmount > 0 ? item.accountId : (partner?.accountId ?? null);
+    const creditAccountId =
+      item.incomeAmount > 0 ? item.accountId : (partner?.accountId ?? null);
+    const investment = item.transferKind === "investment";
+    return {
+      ...item,
+      operatingAccountId: (investment ? debitAccountId : creditAccountId) ?? undefined,
+      instrumentAccountId: (investment ? creditAccountId : debitAccountId) ?? undefined,
+      transferPartner: partner
+        ? {
+            id: partner.id,
+            accountId: partner.accountId,
+            accountName: partner.account?.name ?? "Cuenta",
+            incomeAmount: partner.incomeAmount,
+            expenseAmount: partner.expenseAmount,
+          }
+        : null,
+    };
+  });
 
   return (
     <Suspense fallback={<div className="text-sm text-muted">Cargando movimientos...</div>}>
@@ -195,6 +234,8 @@ export default async function TransactionsPage() {
           currency: item.currency,
           active: item.active,
           isDefault: item.isDefault,
+          bankName: item.bankName,
+          bankRole: item.bankRole,
         }))}
         transactions={movementItems}
         bnaFx={bnaFx}

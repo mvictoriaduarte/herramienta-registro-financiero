@@ -5,7 +5,7 @@ import { z } from "zod";
 import { requireUser } from "@/lib/guards";
 import { prisma } from "@/lib/prisma";
 import type { ActionState } from "@/lib/types";
-import { parseAccountPurpose } from "@/lib/finance";
+import { parseAccountPurpose, parseBankRole } from "@/lib/finance";
 
 const accountSchema = z.object({
   name: z
@@ -15,6 +15,9 @@ const accountSchema = z.object({
     .max(60, "El nombre es demasiado largo."),
   currency: z.enum(["ARS", "USD"]),
   purpose: z.enum(["spending", "savings"]),
+  tracksYield: z.boolean().optional(),
+  bankName: z.string().trim().max(40, "El banco es demasiado largo.").optional(),
+  bankRole: z.enum(["none", "operating", "instrument"]).optional(),
   isDefault: z.boolean().optional(),
 });
 
@@ -52,6 +55,19 @@ async function applyDefaultFlag(userId: string, accountId: string, makeDefault: 
   return false;
 }
 
+function bankFieldsFromForm(formData: FormData) {
+  const banking = formData.get("banking") === "on";
+  const bankName = String(formData.get("bankName") ?? "").trim();
+  const bankRole = parseBankRole(formData.get("bankRole"));
+  if (!banking) {
+    return { bankName: "", bankRole: "none" as const };
+  }
+  if (!bankName || bankRole === "none") {
+    return { error: "Elegí el banco y si es caja operativa o instrumento." as const };
+  }
+  return { bankName, bankRole };
+}
+
 export async function createAccountAction(
   _prev: ActionState,
   formData: FormData,
@@ -61,11 +77,19 @@ export async function createAccountAction(
     name: formData.get("name"),
     currency: formData.get("currency"),
     purpose: parseAccountPurpose(formData.get("purpose")),
+    tracksYield: formData.get("tracksYield") === "on",
+    bankName: String(formData.get("bankName") ?? "").trim(),
+    bankRole: parseBankRole(formData.get("bankRole")),
     isDefault: formData.get("isDefault") === "on",
   });
 
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
+  }
+
+  const bank = bankFieldsFromForm(formData);
+  if ("error" in bank) {
+    return { error: bank.error };
   }
 
   const existing = await prisma.account.findFirst({
@@ -84,6 +108,9 @@ export async function createAccountAction(
       name: parsed.data.name,
       currency: parsed.data.currency,
       purpose: parsed.data.purpose,
+      tracksYield: Boolean(parsed.data.tracksYield),
+      bankName: bank.bankName,
+      bankRole: bank.bankRole,
       isDefault: false,
       userId: session.userId,
     },
@@ -111,11 +138,19 @@ export async function updateAccountAction(
     name: formData.get("name"),
     currency: formData.get("currency"),
     purpose: parseAccountPurpose(formData.get("purpose")),
+    tracksYield: formData.get("tracksYield") === "on",
+    bankName: String(formData.get("bankName") ?? "").trim(),
+    bankRole: parseBankRole(formData.get("bankRole")),
     isDefault: formData.get("isDefault") === "on",
   });
 
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Datos inválidos." };
+  }
+
+  const bank = bankFieldsFromForm(formData);
+  if ("error" in bank) {
+    return { error: bank.error };
   }
 
   const account = await prisma.account.findFirst({
@@ -146,6 +181,9 @@ export async function updateAccountAction(
       name: parsed.data.name,
       currency: parsed.data.currency,
       purpose: parsed.data.purpose,
+      tracksYield: Boolean(parsed.data.tracksYield),
+      bankName: bank.bankName,
+      bankRole: bank.bankRole,
     },
   });
 
@@ -196,7 +234,30 @@ export async function deleteAccountAction(formData: FormData) {
     return { error: "Cuenta no encontrada." };
   }
 
-  await prisma.$transaction([
+  const transferGroups = (
+    await prisma.transaction.findMany({
+      where: {
+        userId: session.userId,
+        accountId: account.id,
+        transferGroupId: { not: "" },
+      },
+      select: { transferGroupId: true },
+    })
+  )
+    .map((item) => item.transferGroupId)
+    .filter(Boolean);
+
+  const ops = [
+    ...(transferGroups.length
+      ? [
+          prisma.transaction.deleteMany({
+            where: {
+              userId: session.userId,
+              transferGroupId: { in: transferGroups },
+            },
+          }),
+        ]
+      : []),
     prisma.transaction.updateMany({
       where: { accountId: account.id, userId: session.userId },
       data: { accountId: null },
@@ -205,7 +266,9 @@ export async function deleteAccountAction(formData: FormData) {
       where: { accountId: account.id, userId: session.userId },
     }),
     prisma.account.delete({ where: { id: account.id } }),
-  ]);
+  ];
+
+  await prisma.$transaction(ops);
 
   if (account.isDefault) {
     const next = await prisma.account.findFirst({
